@@ -58,6 +58,7 @@ from vllm.usage.usage_lib import (UsageContext, is_usage_stats_enabled,
                                   usage_message)
 from vllm.utils import Counter, Device, deprecate_kwargs, weak_bind
 from vllm.version import __version__ as VLLM_VERSION
+from vllm.spec_decode.util import nvtx_range
 
 logger = init_logger(__name__)
 _LOCAL_LOGGING_INTERVAL_SEC = 5
@@ -1237,6 +1238,7 @@ class LLMEngine:
                 else:
                     seq.append_token_id(sample.output_token, sample.logprobs)
 
+    @nvtx_range("LLMEngine.step")
     def step(self) -> List[Union[RequestOutput, PoolingRequestOutput]]:
         """Performs one decoding iteration and returns newly generated results.
 

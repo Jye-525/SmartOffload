@@ -169,6 +169,7 @@ def run_vllm(
     from vllm import LLM, SamplingParams
     llm = LLM(**dataclasses.asdict(engine_args))
 
+    # llm.start_profile()
     # Add the requests to the engine.
     prompts: List[TextPrompt] = []
     sampling_params: List[SamplingParams] = []
@@ -213,6 +214,8 @@ def run_vllm(
                 ignore_eos=True,
             ))
         end = time.perf_counter()
+    # llm.stop_profile()
+    # time.sleep(10) # Add a buffer to wait for profiler in the background process
     return end - start
 
 

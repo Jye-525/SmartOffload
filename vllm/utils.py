@@ -2206,3 +2206,37 @@ def run_method(obj: Any, method: Union[str, bytes, Callable], args: Tuple[Any],
     else:
         func = partial(method, obj)  # type: ignore
     return func(*args, **kwargs)
+
+# def instrument_w_nvtx(func):
+#     """decorator that causes an NVTX range to be recorded for the duration of the
+#     function call."""
+
+#     def wrapped_fn(*args, **kwargs):
+#         torch.cuda.nvtx.range_push(func.__qualname__)
+#         ret_val = func(*args, **kwargs)
+#         torch.cuda.nvtx.range_pop()
+#         return ret_val
+
+#     return wrapped_fn
+
+
+# @contextmanager
+# def nvtx_range(msg, *args, **kwargs):
+#     """ 
+#     Context manager / decorator that pushes an NVTX range at the beginning
+#     of its scope, and pops it at the end. If extra arguments are given,
+#     they are passed as arguments to msg.format().
+
+#     If running with cuda graphs, you must enable nsys cuda graph profiling.
+
+#     Arguments:
+#         msg (string): message to associate with the range
+#     """
+#     if current_platform.is_cuda_alike():
+#         torch.cuda.nvtx.range_push(msg.format(*args, **kwargs))
+#         try:
+#             yield
+#         finally:
+#             torch.cuda.nvtx.range_pop()
+#     else:
+#         yield

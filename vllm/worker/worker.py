@@ -30,6 +30,7 @@ from vllm.worker.model_runner import GPUModelRunnerBase, ModelRunner
 from vllm.worker.pooling_model_runner import PoolingModelRunner
 from vllm.worker.worker_base import (LocalOrDistributedWorkerBase, WorkerBase,
                                      WorkerInput)
+from vllm.spec_decode.util import nvtx_range
 
 logger = init_logger(__name__)
 
@@ -168,6 +169,7 @@ class Worker(LocalOrDistributedWorkerBase):
         # Set random seed.
         set_random_seed(self.model_config.seed)
 
+    @nvtx_range("Woker.load_model") 
     def load_model(self):
         if self.vllm_config.model_config.enable_sleep_mode:
             allocator = CuMemAllocator.get_instance()

@@ -51,6 +51,8 @@ from .utils import (is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
 
+from vllm.logger import init_logger
+logger = init_logger(__name__)
 
 class MixtralMoE(nn.Module):
     """A tensor-parallel MoE implementation for Mixtral that shards each expert
@@ -306,9 +308,17 @@ class MixtralModel(nn.Module):
             residual = intermediate_tensors["residual"]
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
+            layer_fwd_start = torch.cuda.Event(enable_timing=True)
+            layer_fwd_end = torch.cuda.Event(enable_timing=True)
+            layer_fwd_start.record()
             hidden_states, residual = layer(positions, hidden_states,
                                             kv_caches[i - self.start_layer],
                                             attn_metadata, residual)
+            layer_fwd_end.record()
+            layer_fwd_end.synchronize()
+            elapsed_time = layer_fwd_start.elapsed_time(layer_fwd_end)
+            logger.debug(f"Layer {i} forward time: {elapsed_time:.3f} ms") 
+            
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
                 "hidden_states": hidden_states,
@@ -426,6 +436,7 @@ class MixtralForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         params_dict = dict(self.named_parameters())
         loaded_params: Set[str] = set()
         for name, loaded_weight in weights:
+            logger.debug(f"MixtralForCausalLM's load_weights() Loading {name}")
             if "rotary_emb.inv_freq" in name:
                 continue
 

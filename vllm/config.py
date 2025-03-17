@@ -969,6 +969,8 @@ class CacheConfig:
             prefix caching enabled.
         enable_prefix_caching: Whether to enable prefix caching.
         cpu_offload_gb: Size of the CPU offload buffer in GiB.
+        cpu_offload_layers: Number of layers to offload to CPU. 
+        cpu_offload_type: Type of CPU offload.
     """
 
     def compute_hash(self) -> str:
@@ -1000,6 +1002,8 @@ class CacheConfig:
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         cpu_offload_gb: float = 0,
+        cpu_offload_layers: int = 0,
+        cpu_offload_type: str = None,
         calculate_kv_scales: Optional[bool] = None,
     ) -> None:
         self.block_size = block_size
@@ -1011,6 +1015,8 @@ class CacheConfig:
         self.sliding_window = sliding_window
         self.enable_prefix_caching = enable_prefix_caching
         self.cpu_offload_gb = cpu_offload_gb
+        self.cpu_offload_layers = cpu_offload_layers
+        self.cpu_offload_type = cpu_offload_type
         self.calculate_kv_scales = calculate_kv_scales
         self._verify_args()
         self._verify_cache_dtype()
@@ -1034,6 +1040,10 @@ class CacheConfig:
             raise ValueError(
                 "GPU memory utilization must be less than 1.0. Got "
                 f"{self.gpu_memory_utilization}.")
+        if self.cpu_offload_gb > 0 and self.cpu_offload_layers > 0:
+            raise ValueError(
+                "-- cpu_offload_gb and cpu_offload_layers can not be set at the same time."
+            )
 
     def _verify_cache_dtype(self) -> None:
         if self.cache_dtype == "auto":

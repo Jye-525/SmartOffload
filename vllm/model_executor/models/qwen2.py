@@ -343,6 +343,9 @@ class Qwen2Model(nn.Module):
             residual = intermediate_tensors["residual"]
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
+            layer_fwd_start = torch.cuda.Event(enable_timing=True)
+            layer_fwd_end = torch.cuda.Event(enable_timing=True)
+            layer_fwd_start.record()
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
@@ -350,6 +353,11 @@ class Qwen2Model(nn.Module):
                 attn_metadata,
                 residual,
             )
+            layer_fwd_end.record()
+            layer_fwd_end.synchronize()
+            elapsed_time = layer_fwd_start.elapsed_time(layer_fwd_end)
+            logger.debug(f"Layer {i} forward time: {elapsed_time:.3f} ms") 
+            
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
                 "hidden_states": hidden_states,

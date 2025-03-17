@@ -50,8 +50,13 @@ from .interfaces import SupportsLoRA, SupportsPP
 from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
-                    maybe_prefix)
+                    maybe_prefix, make_layers_1)
 
+from vllm.model_executor.offload_buffer import OffloadBuffer
+from vllm.spec_decode.util import nvtx_range
+
+from vllm.logger import init_logger
+logger = init_logger(__name__)
 
 class LlamaMLP(nn.Module):
 
@@ -214,6 +219,7 @@ class LlamaDecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
+        self.layer_idx = extract_layer_index(prefix)
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
         if rope_scaling is not None and getattr(
@@ -259,6 +265,7 @@ class LlamaDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
 
+    @nvtx_range("LlamaDecoderLayer.forward")
     def forward(
         self,
         positions: torch.Tensor,
@@ -302,6 +309,7 @@ class LlamaModel(nn.Module):
         lora_config = vllm_config.lora_config
 
         self.config = config
+        self.cache_config = cache_config
         self.quant_config = quant_config
         self.padding_idx = config.pad_token_id
         lora_vocab = (lora_config.lora_extra_vocab_size *
@@ -318,14 +326,28 @@ class LlamaModel(nn.Module):
             )
         else:
             self.embed_tokens = PPMissingLayer()
-        self.start_layer, self.end_layer, self.layers = make_layers(
-            config.num_hidden_layers,
-            lambda prefix: layer_type(config=config,
-                                      cache_config=cache_config,
-                                      quant_config=quant_config,
-                                      prefix=prefix),
-            prefix=f"{prefix}.layers",
-        )
+            
+        if cache_config.cpu_offload_layers > 0:
+            # create offload buffer
+            self.offload_buffer = OffloadBuffer(cache_config.cpu_offload_layers,cache_config.cpu_offload_type)
+            self.start_layer, self.end_layer, self.layers = make_layers_1(
+                config.num_hidden_layers,
+                lambda prefix: layer_type(config=config,
+                                        cache_config=cache_config,
+                                        quant_config=quant_config,
+                                        prefix=prefix),
+                prefix=f"{prefix}.layers",
+                offload_fn=self.offload_buffer.create_module,
+            )
+        else:
+            self.start_layer, self.end_layer, self.layers = make_layers(
+                config.num_hidden_layers,
+                lambda prefix: layer_type(config=config,
+                                        cache_config=cache_config,
+                                        quant_config=quant_config,
+                                        prefix=prefix),
+                prefix=f"{prefix}.layers",
+            )
         if get_pp_group().is_last_rank:
             self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
@@ -338,6 +360,7 @@ class LlamaModel(nn.Module):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
+    @nvtx_range("LlamaModel.forward")
     def forward(
         self,
         input_ids: Optional[torch.Tensor],
@@ -358,11 +381,20 @@ class LlamaModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        # layer_fwd_start_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
+        # layer_fwd_end_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
+            # layer_fwd_start_list[i].record()
             hidden_states, residual = layer(positions, hidden_states,
                                             kv_caches[i - self.start_layer],
                                             attn_metadata, residual)
+            # layer_fwd_end_list[i].record()
+        
+        # for i in range(self.start_layer, self.end_layer):    
+        #     layer_fwd_end_list[i].synchronize()
+        #     elapsed_time = layer_fwd_start_list[i].elapsed_time(layer_fwd_end_list[i])
+        #     logger.debug(f"Layer {i} forward time: {elapsed_time:.3f} ms")
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
@@ -384,6 +416,7 @@ class LlamaModel(nn.Module):
             (".gate_up_proj", ".up_proj", 1),
         ]
         params_dict = dict(self.named_parameters())
+        logger.debug(f"In LlamaModel's load_weights: Model parameters: {list(params_dict.keys())}")
         loaded_params: Set[str] = set()
         for name, loaded_weight in weights:
             if "rotary_emb.inv_freq" in name:
@@ -393,6 +426,7 @@ class LlamaModel(nn.Module):
                 # Models trained using ColossalAI may include these tensors in
                 # the checkpoint. Skip them.
                 continue
+            
             if (self.quant_config is not None and
                 (scale_name := self.quant_config.get_cache_scale(name))):
                 # Loading kv cache quantization scales
@@ -437,6 +471,13 @@ class LlamaModel(nn.Module):
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
+    
+    def maybe_offload(self):
+        if self.cache_config.cpu_offload_layers > 0:
+           for i in range(self.start_layer, self.end_layer):
+               self.layers[i] = self.offload_buffer.maybe_offload(self.layers[i], i, self.start_layer, self.end_layer)
+               device = next(self.layers[i].parameters()).device
+               print(f"+++++++LlamaModel.maybe_offloading layer {i} parameters device = {device}", flush=True) 
 
 
 class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
@@ -540,6 +581,7 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
                                   inputs_embeds)
         return model_output
 
+    @nvtx_range("LlamaForCausalLM.compute_logits")
     def compute_logits(
         self,
         hidden_states: torch.Tensor,
@@ -548,7 +590,8 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         logits = self.logits_processor(self.lm_head, hidden_states,
                                        sampling_metadata)
         return logits
-
+    
+    @nvtx_range("LlamaForCausalLM.sample")
     def sample(self, logits: torch.Tensor,
                sampling_metadata: SamplingMetadata) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(logits, sampling_metadata)
@@ -561,9 +604,14 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             skip_prefixes=(["lm_head."]
                            if self.config.tie_word_embeddings else None),
         )
-        return loader.load_weights(
+        
+        loaded_weights = loader.load_weights(
             self.maybe_remap_mistral(name, loaded_weight)
             for name, loaded_weight in weights)
+        
+        # call maybe_offload to check if need to offload some of the model weights to CPU
+        self.model.maybe_offload()
+        return loaded_weights
 
     # This function is used to remap the mistral format as
     # used by Mistral and Llama <=2
@@ -572,7 +620,7 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         name: str,
         loaded_weight: torch.Tensor,
     ) -> Tuple[str, torch.Tensor]:
-
+        
         def permute(w: torch.Tensor, n_heads: int):
             attn_in = self.config.head_dim * n_heads
             attn_out = self.config.hidden_size

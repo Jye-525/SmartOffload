@@ -14,6 +14,7 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.multimodal import MultiModalPlaceholderMap, NestedTensors
 from vllm.sequence import IntermediateTensors
 from vllm.utils import is_pin_memory_available
+from vllm.spec_decode.util import nvtx_range
 
 logger = init_logger(__name__)
 
@@ -482,7 +483,7 @@ def set_cpu_offload_max_bytes(max_bytes: int) -> None:
     _CPU_OFFLOAD_MAX_BYTES = max_bytes
 
 
-def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
+def maybe_offload_to_cpu(module: torch.nn.Module, layer_idx) -> torch.nn.Module:
     device = next(module.parameters()).device
 
     if device == torch.device("cpu"):
@@ -497,12 +498,14 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
     # offload parameters to CPU
     # use pin_memory if possible, which helps cudagraph capture speed
     offloaded_parameters = False
-    for p in module.parameters():
+    # for p in module.parameters():
+    for name, p in module.named_parameters():
         if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES:
             # we use per-parameter offloading
             # one module might have some parameters offloaded and some not
             break
-
+        
+        print(f"May_be_offload_to_cpu - Layer name: {name}, Layer idx: {layer_idx}, tensor_shape: {p.data.shape}, num_of_elements: {p.numel()}.")
         # `torch.empty_like` does not support `pin_memory` argument
         cpu_data = torch.empty_strided(size=p.data.size(),
                                        stride=p.data.stride(),
@@ -516,27 +519,136 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
         offloaded_parameters = True
 
     if offloaded_parameters:
+        logger.debug(f"Parameters of layer {layer_idx} is offloaded to CPU.....")
         original_forward = module.forward
 
+        @nvtx_range(f"Layer.Wrap_forward")
         def forward(*args, **kwargs):
             module.forward = original_forward
-            device_state = {
-                # here we blindly call `to(device)`
-                # if the parameter is already on the device, it will be a no-op
-                k: v.to(device, non_blocking=True)
-                for k, v in module.state_dict().items()
-            }
+            # layer_fwd_start_list = [torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)]
+            # layer_fwd_end_list = [torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)]
+            # layer_fwd_start_list[0].record()
+            with nvtx_range(f"Layer.H2D_MemCpy"):
+                device_state = {
+                    # here we blindly call `to(device)`
+                    # if the parameter is already on the device, it will be a no-op
+                    k: v.to(device, non_blocking=True)
+                    for k, v in module.state_dict().items()
+                }
+            # layer_fwd_end_list[0].record()
+            # # Calculate total size in bytes
+            # total_size = sum(v.element_size() * v.numel() for v in device_state.values())
+            for k, v in device_state.items():
+                logger.debug(f"Layer {module.layer_idx} name: {k}, tensor.device: {v.device}")
+
+            # confirm if both k and v are tensors.
+            # layer_fwd_start_list[1].record()
             output = functional_call(module,
                                      device_state,
                                      args=args,
                                      kwargs=kwargs)
+            # layer_fwd_end_list[1].record()
             module.forward = forward
+            # for i in range(2):
+            #     layer_fwd_end_list[i].synchronize()
+            # data_mv_time = layer_fwd_start_list[0].elapsed_time(layer_fwd_end_list[0]) # in ms
+            # fwd_time = layer_fwd_start_list[1].elapsed_time(layer_fwd_end_list[1]) # in ms
+            # logger.debug(f"Time taken to move parameters to GPU: {data_mv_time:.3f} ms, fwd_time = {fwd_time:.3f} ms, tensors size per layer: {total_size / (1024 ** 2):.2f} MB")    
             return output
 
         module.forward = forward
 
     return module
 
+# _CPU_OFFLOADED_LAYERS=0
+# _CPU_OFFLOAD_MAX_LAYERS=0
+# def set_cpu_offload_max_layers(max_layers: int) -> None:
+#     global _CPU_OFFLOADED_LAYERS, _CPU_OFFLOAD_MAX_LAYERS
+#     _CPU_OFFLOADED_LAYERS = 0
+#     _CPU_OFFLOAD_MAX_LAYERS = max_layers
+
+# def maybe_offload_to_cpu_based_on_layers(module: torch.nn.Module, layer_idx: int) -> torch.nn.Module:
+#     device = next(module.parameters()).device
+
+#     if device == torch.device("cpu"):
+#         return module
+
+#     global _CPU_OFFLOADED_LAYERS, _CPU_OFFLOAD_MAX_LAYERS
+#     if _CPU_OFFLOADED_LAYERS >= _CPU_OFFLOAD_MAX_LAYERS:
+#         return module
+
+#     _CPU_OFFLOADED_LAYERS += 1
+#     pin_memory = is_pin_memory_available()
+
+#     # offload parameters to CPU
+#     # use pin_memory if possible, which helps cudagraph capture speed
+#     offloaded_parameters = False
+#     # for p in module.parameters():
+#     for name, p in module.named_parameters():
+#         tmp_device_1 = p.device
+#         # `torch.empty_like` does not support `pin_memory` argument
+#         cpu_data = torch.empty_strided(size=p.data.size(),
+#                                        stride=p.data.stride(),
+#                                        dtype=p.data.dtype,
+#                                        layout=p.data.layout,
+#                                        device='cpu',
+#                                        pin_memory=pin_memory)
+#         cpu_data.copy_(p.data)
+#         p.data = cpu_data
+#         tmp_device_2 = p.device
+#         # _CPU_OFFLOAD_BYTES += p.data.numel() * p.data.element_size()
+#         tensor_size = (p.element_size() * p.numel()) / (1024 ** 2) # in MB
+#         logger.debug(f"Based on layers: Layer name: {name}, Layer idx: {layer_idx}, tensor size: {tensor_size:.2f} MB, before device={tmp_device_1}, after decivce={tmp_device_2}, module device={device}")
+#         offloaded_parameters = True
+
+#     if offloaded_parameters:
+#         logger.debug(f"Based on layers: Parameters of layer {layer_idx} is offloaded to CPU.....")
+#         original_forward = module.forward
+
+#         def forward(*args, **kwargs):
+#             module.forward = original_forward
+#             # Warm up CUDA
+#             # torch.randn(1, device=device)
+#             # torch.cuda.synchronize()
+#             start_time = time.perf_counter()
+#             # start_event = torch.cuda.Event(enable_timing=True)
+#             # end_event = torch.cuda.Event(enable_timing=True)
+#             # start_event.record()
+#             device_state = {
+#                 # here we blindly call `to(device)`
+#                 # if the parameter is already on the device, it will be a no-op
+#                 k: v.to(device, non_blocking=True)
+#                 for k, v in module.state_dict().items()
+#             }
+#             # end_event.record()
+#             # start_event.synchronize()
+#             # elapsed_time = start_event.elapsed_time(end_event) # in ms
+#             end_time = time.perf_counter()
+#             elapsed_time = (end_time - start_time) * 1000
+#             # Calculate total size in bytes
+#             total_size = sum(v.element_size() * v.numel() for v in device_state.values()) / (1024 ** 2) # in MB
+#             logger.debug(f"Based on layers: Time taken to offload parameters to GPU: {elapsed_time:.3f} ms, tensors size per layer: {total_size} MB, transfer rate: {total_size / (elapsed_time / 1000):.2f} MB/s")
+        
+#             # confirm if both k and v are tensors.
+#             start_time1 = time.perf_counter()
+#             # start_event.record()
+#             output = functional_call(module,
+#                                      device_state,
+#                                      args=args,
+#                                      kwargs=kwargs)
+#             # end_event.record()
+#             end_time1 = time.perf_counter()
+#             # start_event.synchronize()
+#             elapsed_time1 = (end_time1 - start_time1) * 1000
+#             # elapsed_time = start_event.elapsed_time(end_event) # in ms
+#             logger.debug(f"Based on layers: Time taken to forward pass: {elapsed_time1:.3f} ms, event_timing={elapsed_time:.3f} ms")
+#             module.forward = forward
+#             return output
+
+#         module.forward = forward
+       
+#     return module  
+    
 
 def make_layers(
     num_hidden_layers: int,
@@ -551,12 +663,39 @@ def make_layers(
     start_layer, end_layer = get_pp_indices(num_hidden_layers,
                                             get_pp_group().rank_in_group,
                                             get_pp_group().world_size)
+    logger.debug(f"In pp rank {get_pp_group().rank_in_group},  start_layer: {start_layer}, end_layer: {end_layer}, num_hidden_layers: {num_hidden_layers}")
+    # based on CPU size
     modules = torch.nn.ModuleList(
         [PPMissingLayer() for _ in range(start_layer)] + [
-            maybe_offload_to_cpu(layer_fn(prefix=f"{prefix}.{idx}"))
+            maybe_offload_to_cpu(layer_fn(prefix=f"{prefix}.{idx}"), layer_idx=idx)
             for idx in range(start_layer, end_layer)
-        ] + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)])
+        ] + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)]) 
+        
     return start_layer, end_layer, modules
+
+def make_layers_1(
+    num_hidden_layers: int,
+    layer_fn: LayerFn,
+    prefix: str,
+    offload_fn
+) -> Tuple[int, int, torch.nn.ModuleList]:
+    """Make a list of layers with the given layer function, taking
+    pipeline parallelism into account.
+    """
+    from vllm.distributed.parallel_state import get_pp_group
+    from vllm.distributed.utils import get_pp_indices
+    start_layer, end_layer = get_pp_indices(num_hidden_layers,
+                                            get_pp_group().rank_in_group,
+                                            get_pp_group().world_size)
+    logger.debug(f"+++++++In pp rank {get_pp_group().rank_in_group},  start_layer: {start_layer}, end_layer: {end_layer}, num_hidden_layers: {num_hidden_layers}")
+    modules = torch.nn.ModuleList(
+            [PPMissingLayer() for _ in range(start_layer)] + [
+                offload_fn(layer_fn(prefix=f"{prefix}.{idx}"), layer_idx=idx, start_layer=start_layer, end_layer=end_layer)
+                for idx in range(start_layer, end_layer)
+            ] + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)])
+        
+    return start_layer, end_layer, modules 
+    
 
 
 # NOTE: don't use lru_cache here because it can prevent garbage collection

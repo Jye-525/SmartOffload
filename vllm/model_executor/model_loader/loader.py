@@ -53,6 +53,7 @@ from vllm.platforms import current_platform
 from vllm.transformers_utils.s3_utils import glob as s3_glob
 from vllm.transformers_utils.utils import is_s3
 from vllm.utils import is_pin_memory_available
+from vllm.spec_decode.util import nvtx_range
 
 
 @contextmanager
@@ -109,6 +110,7 @@ def _initialize_model(
     """Initialize a model with the given configurations."""
     model_config = vllm_config.model_config
     model_class, _ = get_model_architecture(model_config)
+    logger.debug(f"Initializing model {model_class} with prefix {prefix}")
 
     signatures = inspect.signature(model_class.__init__)
     all_params = [param.name for param in signatures.parameters.values()]
@@ -307,6 +309,7 @@ class DefaultModelLoader(BaseModelLoader):
         hf_folder, hf_weights_files, use_safetensors = self._prepare_weights(
             source.model_or_path, source.revision, source.fall_back_to_pt,
             source.allow_patterns_overrides)
+        print(f"In DefaultModelLoader._get_weights_iterator: hf_folder: {hf_folder}, hf_weights_files: {hf_weights_files}, use_safetensors: {use_safetensors}")
         if self.load_config.load_format == LoadFormat.NPCACHE:
             # Currently np_cache only support *.bin checkpoints
             assert use_safetensors is False
@@ -373,11 +376,14 @@ class DefaultModelLoader(BaseModelLoader):
         target_device = torch.device(device_config.device)
         with set_default_torch_dtype(model_config.dtype):
             with target_device:
-                model = _initialize_model(vllm_config=vllm_config)
+                with nvtx_range("DefaultModelLoader._initialize_model"):
+                    model = _initialize_model(vllm_config=vllm_config)
+                logger.debug(f"DefaultModelLoader finished initializing model.")
 
             weights_to_load = {name for name, _ in model.named_parameters()}
-            loaded_weights = model.load_weights(
-                self._get_all_weights(model_config, model))
+            with nvtx_range("DefaultModelLoader.load_weights"):
+                loaded_weights = model.load_weights(
+                    self._get_all_weights(model_config, model))
             # We only enable strict check for non-quantized models
             # that have loaded weights tracking currently.
             if model_config.quantization is None and loaded_weights is not None:
@@ -397,6 +403,7 @@ class DefaultModelLoader(BaseModelLoader):
                     # parameters onto device for processing and back off after.
                     with device_loading_context(module, target_device):
                         quant_method.process_weights_after_loading(module)
+        logger.debug(f"DefaultModelLoader finished loading model.")
         return model.eval()
 
 

@@ -115,6 +115,8 @@ class EngineArgs:
     use_v2_block_manager: bool = True
     swap_space: float = 4  # GiB
     cpu_offload_gb: float = 0  # GiB
+    cpu_offload_layers: int = 0
+    cpu_offload_type: str = 'all'
     gpu_memory_utilization: float = 0.90
     max_num_batched_tokens: Optional[int] = None
     max_num_seqs: Optional[int] = None
@@ -470,6 +472,20 @@ class EngineArgs:
             'requires fast CPU-GPU interconnect, as part of the model is '
             'loaded from CPU memory to GPU memory on the fly in each '
             'model forward pass.')
+        # used for model weights offloading (ringbuffer, offload the last k layers to CPU)
+        parser.add_argument(
+            '--cpu-offload-layers',
+            type=int,
+            default=0,
+            help='The number of layers to offload to CPU. Here it refers to offload the last k layers.'
+        )
+        parser.add_argument(
+            '--cpu-offload-type',
+            type=str,
+            choices=['moe-only', 'all'],
+            default='all',
+            help="The type of offloading to CPU. Currently, it supports ['moe-only', 'all']."
+        )
         parser.add_argument(
             '--gpu-memory-utilization',
             type=float,
@@ -1053,6 +1069,7 @@ class EngineArgs:
                            "has been disabled.")
             self.enable_prefix_caching = False
 
+        logger.debug(f"Creating Cache config: cpu_offload_layers={self.cpu_offload_layers}, cpu_offload_gb={self.cpu_offload_gb}, cput_offload_type={self.cpu_offload_type}")
         cache_config = CacheConfig(
             block_size=self.block_size,
             gpu_memory_utilization=self.gpu_memory_utilization,
@@ -1063,6 +1080,8 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             cpu_offload_gb=self.cpu_offload_gb,
+            cpu_offload_layers=self.cpu_offload_layers,
+            cpu_offload_type=self.cpu_offload_type,
             calculate_kv_scales=self.calculate_kv_scales,
         )
         parallel_config = ParallelConfig(

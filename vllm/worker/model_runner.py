@@ -57,6 +57,8 @@ from vllm.worker.model_runner_base import (
     _init_attn_metadata_from_tensor_dict,
     _init_sampling_metadata_from_tensor_dict, dump_input_when_exception)
 
+from vllm.spec_decode.util import nvtx_range
+
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
 
@@ -1086,8 +1088,16 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         self.lora_manager: Optional[LRUCacheWorkerLoRAManager] = None
         self.prompt_adapter_manager: LRUCacheWorkerPromptAdapterManager = None
 
+        # if self.cache_config.cpu_offload_gb > 0:
+        #     set_cpu_offload_max_bytes(
+        #         int(self.cache_config.cpu_offload_gb * 1024**3))
+        # elif self.cache_config.cpu_offload_layers > 0:
+        #     # cpu offload based on number of layers
+        #     set_cpu_offload_max_layers(self.cache_config.cpu_offload_layers)
+        # else:
+        #     set_cpu_offload_max_bytes(0)
         set_cpu_offload_max_bytes(
-            int(self.cache_config.cpu_offload_gb * 1024**3))
+                int(self.cache_config.cpu_offload_gb * 1024**3))
 
         # Used to cache python objects
         self.inter_data_cache: Dict[int, PyObjectCache] = {}
@@ -1106,6 +1116,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
             # multi-step model runner does not have `_builder_cls`
             self.builder = self._builder_cls(weakref.proxy(self))
 
+    @nvtx_range("GPUModelRunnerBase.load_model")
     def load_model(self) -> None:
         logger.info("Starting to load model %s...", self.model_config.model)
         with DeviceMemoryProfiler() as m:
@@ -1228,12 +1239,14 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
             self.in_profile_run = False
 
     @torch.inference_mode()
+    @nvtx_range("GPUModelRunnerBase.profile_run")
     def profile_run(self) -> None:
         max_num_batched_tokens = \
             self.scheduler_config.max_num_batched_tokens
         max_num_seqs = self.scheduler_config.max_num_seqs
         self._dummy_run(max_num_batched_tokens, max_num_seqs)
 
+    @nvtx_range("GPUModelRunnerBase._dummy_run")
     def _dummy_run(self,
                    max_num_batched_tokens: int,
                    max_num_seqs: int = 1) -> None:
@@ -1641,6 +1654,7 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
 
     @torch.inference_mode()
     @dump_input_when_exception(exclude_args=[0], exclude_kwargs=["self"])
+    @nvtx_range("ModelRunner.execute_model")
     def execute_model(
         self,
         model_input: ModelInputForGPUWithSamplingMetadata,
