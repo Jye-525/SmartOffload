@@ -205,3 +205,4 @@ shellcheck*/
 
 Ignore the script folder
 scripts/
+*.nsys-rep  # Exclude files that may contain secrets
