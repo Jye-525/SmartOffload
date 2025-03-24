@@ -263,7 +263,9 @@ class Worker(LocalOrDistributedWorkerBase):
                " PyTorch activation peak memory takes "
                f"{(result.torch_peak_increase / GiB_bytes):.2f}GiB;"
                " the rest of the memory reserved for KV Cache is "
-               f"{(available_kv_cache_memory / GiB_bytes):.2f}GiB.")
+               f"{(available_kv_cache_memory / GiB_bytes):.2f}GiB."
+               f"The engine can allocate {num_gpu_blocks} GPU blocks,"
+               f" {num_cpu_blocks} CPU blocks.")
 
         logger.info(msg)
 

@@ -1,0 +1,98 @@
+
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model Qwen/Qwen1.5-MoE-A2.7B  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --cpu-offload-gb 10 > test_Qwen1.5_offload_10g_1.log 2>&1
+
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --async-engine --input-len 128 --output-len 10 --num-prompts 1 --model Qwen/Qwen1.5-MoE-A2.7B  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --pipeline-parallel-size 2 --cpu-offload-gb 10 > test_Qwen1.5_offload_10g_pp2.log 2>&1
+
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model Qwen/Qwen1.5-MoE-A2.7B  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 2 --pipeline-parallel-size 1 --cpu-offload-gb 10 > test_Qwen1.5_offload_10g_tp2.log 2>&1
+
+
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model mistralai/Mistral-7B-v0.3  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --cpu-offload-gb 10 > test_Mistral7B_offload_10g.log 2>&1
+
+
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model mistralai/Mistral-7B-v0.3  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --pipeline-parallel-size 1 --cpu-offload-layers 10 --cpu-offload-type all  > test_Mistral7B_offload_10layers_tp1_1.log 2>&1
+
+
+#Baseline:
+#(1) without offloading
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model mistralai/Mistral-7B-v0.3  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 > test_Mistral7B_wo_offloading_test.log 2>&1
+
+#(2) with offloading
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model mistralai/Mistral-7B-v0.3  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --cpu-offload-gb 0.9 > test_Mistral7B_w_offload_default_0.9g.log 2>&1
+
+#(3) with offloading, offload layers
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model mistralai/Mistral-7B-v0.3  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --cpu-offload-layers 10 --cpu-offload-type all > test_Mistral7B_w_offload_10layers_all.log 2>&1
+
+
+#(4) running with nisght on to check the data movement and overlapping
+nsys profile -o report_offloading_2layers_1.nsys-rep --trace-fork-before-exec=true --cuda-graph-trace=node python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model mistralai/Mistral-7B-v0.3  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --cpu-offload-layers 2 --cpu-offload-type all > test_Mistral7B_w_offload_layers2_all_2.log 2>&1
+
+
+nsys profile -o report_non-offloading_1.nsys-rep --trace-fork-before-exec=true --cuda-graph-trace=node python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --async-engine --input-len 511 --output-len 1 --num-prompts 1 --model deepseek-ai/deepseek-coder-33b-base  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager --distributed-executor-backend ray --tensor-parallel-size 1 --pipeline-parallel-size 4 --ray-workers-use-nsight > test_deepseek-coder-33b-base_tp1_pp4_1.log 2>&1
+
+
+--cuda-graph-trace=node
+NSYS_LAUNCH_CHILDREN=1  
+# Start vllm Server
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+nohup nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx  -o report.nsys-rep --trace-fork-before-exec=true --delay 10 --duration 1200 \
+vllm serve deepseek-ai/deepseek-coder-33b-base \
+        --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ \
+        --trust-remote-code \
+        --enforce-eager \
+        --distributed-executor-backend ray \
+        --tensor-parallel-size 1 \
+        --pipeline-parallel-size 4 \
+        --ray-workers-use-nsight \
+        --disable-log-requests \
+        > vllm_nsys.log 2>&1 &
+
+--ray-workers-use-nsight \
+
+## v0.7.2
+nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx  -o report.nsys-rep --trace-fork-before-exec=true --delay 10 --duration 1200 \
+vllm serve deepseek-ai/deepseek-coder-33b-base \
+        --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ \
+        --trust-remote-code \
+        --enforce-eager \
+        --distributed-executor-backend ray \
+        --tensor-parallel-size 1 \
+        --pipeline-parallel-size 4 \
+        --ray-workers-use-nsight \
+        --disable-log-requests
+
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3 
+nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx,osrt -o report_mp_osrt+range_5_1.nsys-rep --trace-fork-before-exec=true --delay 0 --duration 1200 \
+vllm serve deepseek-ai/deepseek-coder-33b-base \
+        --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ \
+        --trust-remote-code \
+        --enforce-eager \
+        --distributed-executor-backend mp \
+        --tensor-parallel-size 1 \
+        --pipeline-parallel-size 4 \
+        --disable-log-requests \
+        > vllm_mp_osrt+range_3.log 2>&1 &
+
+--collect-layer-fwd-time \
+
+ps aux | grep vllm
+ps aux | grep /home/jieye/venvs/vllm_moe/bin/python
+pgrep -af nsys
+
+pkill -f vllm
+pkill -f /home/jieye/venvs/vllm_moe/bin/python
+pkill -f nsys
+
+nsys stats --report gputrace report_mp_osrt.nsys-rep
+
+# Run bechmark_server.py
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_serving.py \
+        --backend vllm \
+        --model deepseek-ai/deepseek-coder-33b-base \
+        --dataset-name random \
+        --random-input-len 1024 \
+        --random-output-len 1 \
+        --random-range-ratio 1.0 \
+        --ignore-eos \
+        --num-prompts 10

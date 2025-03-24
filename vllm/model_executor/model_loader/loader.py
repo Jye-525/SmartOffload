@@ -309,7 +309,7 @@ class DefaultModelLoader(BaseModelLoader):
         hf_folder, hf_weights_files, use_safetensors = self._prepare_weights(
             source.model_or_path, source.revision, source.fall_back_to_pt,
             source.allow_patterns_overrides)
-        print(f"In DefaultModelLoader._get_weights_iterator: hf_folder: {hf_folder}, hf_weights_files: {hf_weights_files}, use_safetensors: {use_safetensors}")
+        # print(f"In DefaultModelLoader._get_weights_iterator: hf_folder: {hf_folder}, hf_weights_files: {hf_weights_files}, use_safetensors: {use_safetensors}")
         if self.load_config.load_format == LoadFormat.NPCACHE:
             # Currently np_cache only support *.bin checkpoints
             assert use_safetensors is False

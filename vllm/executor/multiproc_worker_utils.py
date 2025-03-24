@@ -16,6 +16,7 @@ from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.triton_utils.importing import HAS_TRITON
 from vllm.utils import _check_multiproc_method, get_mp_context, run_method
+import subprocess
 
 if HAS_TRITON:
     from vllm.triton_utils import maybe_set_triton_cache_manager
@@ -156,6 +157,7 @@ class ProcessWorkerWrapper:
         self.tasks = result_handler.tasks
         self.process: BaseProcess = self.mp.Process(  # type: ignore[attr-defined]
             target=_run_worker_process,
+            # target=_nsys_wrapped_run_worker_process,
             name="VllmWorkerProcess",
             kwargs=dict(
                 worker_factory=worker_factory,
@@ -165,7 +167,7 @@ class ProcessWorkerWrapper:
                 rank=rank,
             ),
             daemon=True)
-
+        
         self.process.start()
 
     def _enqueue_task(self, future: Union[ResultFuture, asyncio.Future],
@@ -202,6 +204,25 @@ class ProcessWorkerWrapper:
         self._task_queue.close()
         self.process.kill()
 
+# def _nsys_wrapped_run_worker_process(
+#     worker_factory: Callable[[VllmConfig, int], Any],
+#     task_queue: Queue,
+#     result_queue: Queue,
+#     vllm_config: VllmConfig,
+#     rank: int,
+# ) -> None:
+#     """Wrapper to run worker process with nsys profiling"""
+#     # Wrap the target function with nsys
+#     nsys_command = [
+#         "nsys", "profile",
+#         "--trace=cuda,nvtx",  # Add necessary tracing options
+#         "--output=worker_%p",  # Output file for the report
+#         "python", "-c", f"from {__name__} import _run_worker_process; _run_worker_process({worker_factory}, {task_queue}, {result_queue}, {vllm_config}, {rank})"  # Run the target function
+#     ]
+#     print(f"Running worker process for rank {rank} with nsys: {' '.join(nsys_command)}")
+#     subprocess.run(nsys_command)
+    
+    
 
 def _run_worker_process(
     worker_factory: Callable[[VllmConfig, int], Any],
@@ -211,13 +232,12 @@ def _run_worker_process(
     rank: int,
 ) -> None:
     """Worker process event loop"""
-
     # Add process-specific prefix to stdout and stderr
     process_name = get_mp_context().current_process().name
     pid = os.getpid()
     _add_prefix(sys.stdout, process_name, pid)
     _add_prefix(sys.stderr, process_name, pid)
-
+    
     # Initialize worker
     worker = worker_factory(vllm_config, rank)
     del worker_factory

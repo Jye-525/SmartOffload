@@ -8,7 +8,7 @@ from typing import (TYPE_CHECKING, Any, Dict, List, Literal, Mapping, Optional,
 import torch
 
 import vllm.envs as envs
-from vllm.config import (CacheConfig, CompilationConfig, ConfigFormat,
+from vllm.config import (CPUOffloadConfig, CacheConfig, CompilationConfig, ConfigFormat,
                          DecodingConfig, DeviceConfig, HfOverrides,
                          KVTransferConfig, LoadConfig, LoadFormat, LoRAConfig,
                          ModelConfig, ObservabilityConfig, ParallelConfig,
@@ -81,6 +81,18 @@ def nullable_kvs(val: str) -> Optional[Mapping[str, int]]:
 
     return out_dict
 
+def nullable_int_list(val: str) -> Optional[List[int]]:
+    """Parses a string containing comma separated values into a list. Each value is a integer."""
+    if len(val) == 0:
+        return None
+    out_lst: List[int] = []
+    for item in val.split(","):
+        try:
+            out_lst.append(int(item))
+        except ValueError as exc:
+            msg = f"Failed to parse value {item}"
+            raise argparse.ArgumentTypeError(msg) from exc
+    return out_lst
 
 @dataclass
 class EngineArgs:
@@ -114,9 +126,10 @@ class EngineArgs:
     disable_sliding_window: bool = False
     use_v2_block_manager: bool = True
     swap_space: float = 4  # GiB
+    cpu_offload_method: str = 'default' # default, smart_offload
     cpu_offload_gb: float = 0  # GiB
-    cpu_offload_layers: int = 0
-    cpu_offload_type: str = 'all'
+    cpu_offload_layers: Optional[List[int]] = None
+    param_offload_target: str = 'all' # choices=['all', 'attn_only', 'mlp_only', 'attn_mlp', 'moe_only', 'attn_moe', 'selective_experts']
     gpu_memory_utilization: float = 0.90
     max_num_batched_tokens: Optional[int] = None
     max_num_seqs: Optional[int] = None
@@ -200,6 +213,8 @@ class EngineArgs:
     enable_sleep_mode: bool = False
 
     calculate_kv_scales: Optional[bool] = None
+    
+    collect_layer_fwd_time: bool = False
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -459,6 +474,15 @@ class EngineArgs:
                             default=EngineArgs.swap_space,
                             help='CPU swap space size (GiB) per GPU.')
         parser.add_argument(
+            '--cpu-offload-method',
+            type=str,
+            choices=['default', 'smart_offload'],
+            default=EngineArgs.cpu_offload_method,
+            help='The method to offload parameters to CPU. '
+            'The default method is to offloading based on --cpu-offload-gb '
+            'from the first transformer block.'
+        )
+        parser.add_argument(
             '--cpu-offload-gb',
             type=float,
             default=0,
@@ -472,19 +496,20 @@ class EngineArgs:
             'requires fast CPU-GPU interconnect, as part of the model is '
             'loaded from CPU memory to GPU memory on the fly in each '
             'model forward pass.')
-        # used for model weights offloading (ringbuffer, offload the last k layers to CPU)
+        # used for the smart_offload method
         parser.add_argument(
             '--cpu-offload-layers',
-            type=int,
-            default=0,
-            help='The number of layers to offload to CPU. Here it refers to offload the last k layers.'
+            type=nullable_int_list,
+            default=EngineArgs.cpu_offload_layers,
+            help='The number of layers to offload to CPU.'
         )
         parser.add_argument(
-            '--cpu-offload-type',
+            '--param-offload-target',
             type=str,
-            choices=['moe-only', 'all'],
-            default='all',
-            help="The type of offloading to CPU. Currently, it supports ['moe-only', 'all']."
+            choices=['all', 'attn_only', 'mlp_only', 'attn_mlp', 'moe_only', 'attn_moe', 'selective_experts'],
+            default=EngineArgs.param_offload_target,
+            help='Offloading the target parameters from the layers'
+            'specified in --cpu-offload-layers to CPU.'
         )
         parser.add_argument(
             '--gpu-memory-utilization',
@@ -886,7 +911,7 @@ class EngineArgs:
             ". It makes sense to set this only if ``--otlp-traces-endpoint`` is"
             " set. If set, it will collect detailed traces for the specified "
             "modules. This involves use of possibly costly and or blocking "
-            "operations and hence might have a performance impact.")
+            "operations and hence might have a performance impact.") 
 
         parser.add_argument(
             '--disable-async-output-proc',
@@ -973,6 +998,12 @@ class EngineArgs:
             'If calculate-kv-scales is false, the scales will '
             'be loaded from the model checkpoint if available. '
             'Otherwise, the scales will default to 1.0.')
+        
+        parser.add_argument(
+            '--collect-layer-fwd-time',
+            action='store_true',
+            help='If collecting transformer layer forward time in logs. This is useful '
+            'for performance analysis.')
 
         return parser
 
@@ -1069,7 +1100,7 @@ class EngineArgs:
                            "has been disabled.")
             self.enable_prefix_caching = False
 
-        logger.debug(f"Creating Cache config: cpu_offload_layers={self.cpu_offload_layers}, cpu_offload_gb={self.cpu_offload_gb}, cput_offload_type={self.cpu_offload_type}")
+        logger.debug(f"Creating Cache config: cpu_offload_method={self.cpu_offload_method} cpu_offload_layers={self.cpu_offload_layers}, cpu_offload_gb={self.cpu_offload_gb}, param_offload_target={self.param_offload_target}")
         cache_config = CacheConfig(
             block_size=self.block_size,
             gpu_memory_utilization=self.gpu_memory_utilization,
@@ -1079,9 +1110,12 @@ class EngineArgs:
             num_gpu_blocks_override=self.num_gpu_blocks_override,
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
-            cpu_offload_gb=self.cpu_offload_gb,
-            cpu_offload_layers=self.cpu_offload_layers,
-            cpu_offload_type=self.cpu_offload_type,
+            cpu_offload_config=CPUOffloadConfig.create_config(
+                offload_method=self.cpu_offload_method,
+                offload_gb=self.cpu_offload_gb,
+                offload_layers=self.cpu_offload_layers,
+                param_offload_target=self.param_offload_target
+            ), 
             calculate_kv_scales=self.calculate_kv_scales,
         )
         parallel_config = ParallelConfig(
@@ -1278,6 +1312,7 @@ class EngineArgs:
             prompt_adapter_config=prompt_adapter_config,
             compilation_config=self.compilation_config,
             kv_transfer_config=self.kv_transfer_config,
+            collect_layer_fwd_time=self.collect_layer_fwd_time,
         )
 
         if envs.VLLM_USE_V1:

@@ -2207,36 +2207,28 @@ def run_method(obj: Any, method: Union[str, bytes, Callable], args: Tuple[Any],
         func = partial(method, obj)  # type: ignore
     return func(*args, **kwargs)
 
-# def instrument_w_nvtx(func):
-#     """decorator that causes an NVTX range to be recorded for the duration of the
-#     function call."""
 
-#     def wrapped_fn(*args, **kwargs):
-#         torch.cuda.nvtx.range_push(func.__qualname__)
-#         ret_val = func(*args, **kwargs)
-#         torch.cuda.nvtx.range_pop()
-#         return ret_val
+def see_memory_usage(message, force=False):
+    # utility function to print memory usage to measure the memory of a function
+    if not force:
+        return
+    
+    if torch.distributed.is_initialized() and not torch.distributed.get_rank() == 0:
+        return
+    
+    # python doesn't do real-time garbage collection so do it explicitly to get the correct RAM reports
+    gc.collect()
 
-#     return wrapped_fn
+    # Print message except when distributed but not rank 0
+    logger.info(message)
+    logger.info(f"CUDA MA {round(torch.cuda.memory_allocated() / (GiB_bytes),2 )} GB \
+        Max_MA {round(torch.cuda.max_memory_allocated() / (GiB_bytes),2)} GB \
+        CA {round(torch.cuda.memory_reserved() / (GiB_bytes),2)} GB \
+        Max_CA {round(torch.cuda.max_memory_reserved()/ (GiB_bytes))} GB ")
 
+    vm_stats = psutil.virtual_memory()
+    used_GB = round(((vm_stats.total - vm_stats.available) / (GiB_bytes)), 2)
+    logger.info(f'CPU Virtual Memory:  used = {used_GB} GB, percent = {vm_stats.percent}%')
 
-# @contextmanager
-# def nvtx_range(msg, *args, **kwargs):
-#     """ 
-#     Context manager / decorator that pushes an NVTX range at the beginning
-#     of its scope, and pops it at the end. If extra arguments are given,
-#     they are passed as arguments to msg.format().
-
-#     If running with cuda graphs, you must enable nsys cuda graph profiling.
-
-#     Arguments:
-#         msg (string): message to associate with the range
-#     """
-#     if current_platform.is_cuda_alike():
-#         torch.cuda.nvtx.range_push(msg.format(*args, **kwargs))
-#         try:
-#             yield
-#         finally:
-#             torch.cuda.nvtx.range_pop()
-#     else:
-#         yield
+    # get the peak memory to report correct data, so reset the counter for the next call
+    torch.cuda.reset_peak_memory_stats()

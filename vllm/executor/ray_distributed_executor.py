@@ -113,11 +113,12 @@ class RayDistributedExecutor(DistributedExecutorBase):
         runtime_env = ray_remote_kwargs.setdefault("runtime_env", {})
         runtime_env.update({
             "nsight": {
-                "t": "cuda,cudnn,cublas",
-                "o": "'worker_process_%p'",
+                "t": "cuda,cudnn,cublas,nvtx",
+                "o": "/home/jieye/moe_mix_precision/SmartOffload_polaris/scripts/worker_process_%p",
                 "cuda-graph-trace": "node",
             }
         })
+        logger.debug(f"nsight profiling enabled for ray workers. remote_kwargs: {ray_remote_kwargs}")
 
         return ray_remote_kwargs
 

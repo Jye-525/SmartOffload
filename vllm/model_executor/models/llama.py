@@ -30,6 +30,7 @@ from vllm.attention import Attention, AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
@@ -54,8 +55,9 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
 
 from vllm.model_executor.offload_buffer import OffloadBuffer
 from vllm.spec_decode.util import nvtx_range
+from vllm.utils import see_memory_usage
+import time
 
-from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 class LlamaMLP(nn.Module):
@@ -307,7 +309,9 @@ class LlamaModel(nn.Module):
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
         lora_config = vllm_config.lora_config
+        cpu_offload_config = cache_config.cpu_offload_config
 
+        self.collect_layer_fwd_time = vllm_config.collect_layer_fwd_time
         self.config = config
         self.cache_config = cache_config
         self.quant_config = quant_config
@@ -326,10 +330,21 @@ class LlamaModel(nn.Module):
             )
         else:
             self.embed_tokens = PPMissingLayer()
-            
-        if cache_config.cpu_offload_layers > 0:
+        
+        self.offload_buffer = None    
+        if cpu_offload_config.method == "default":
+            self.start_layer, self.end_layer, self.layers = make_layers(
+                config.num_hidden_layers,
+                lambda prefix: layer_type(config=config,
+                                        cache_config=cache_config,
+                                        quant_config=quant_config,
+                                        prefix=prefix),
+                prefix=f"{prefix}.layers",
+            )
+        else:
             # create offload buffer
-            self.offload_buffer = OffloadBuffer(cache_config.cpu_offload_layers,cache_config.cpu_offload_type)
+            self.offload_buffer = OffloadBuffer(cpu_offload_config.cpu_offload_layers,
+                                                cpu_offload_config.param_offload_target)
             self.start_layer, self.end_layer, self.layers = make_layers_1(
                 config.num_hidden_layers,
                 lambda prefix: layer_type(config=config,
@@ -339,15 +354,7 @@ class LlamaModel(nn.Module):
                 prefix=f"{prefix}.layers",
                 offload_fn=self.offload_buffer.create_module,
             )
-        else:
-            self.start_layer, self.end_layer, self.layers = make_layers(
-                config.num_hidden_layers,
-                lambda prefix: layer_type(config=config,
-                                        cache_config=cache_config,
-                                        quant_config=quant_config,
-                                        prefix=prefix),
-                prefix=f"{prefix}.layers",
-            )
+            
         if get_pp_group().is_last_rank:
             self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
@@ -370,39 +377,64 @@ class LlamaModel(nn.Module):
         intermediate_tensors: Optional[IntermediateTensors],
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
+        if self.collect_layer_fwd_time:
+            start_event_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
+            end_event_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
+            start_event_list[0].record()
+        
         if get_pp_group().is_first_rank:
+            # fwd_start_time = time.perf_counter()
+            # print the timestamp of the first rank (GPU time)
+            logger.info(f"[ {int(time.time() * 1000)} ] PP Rank {get_pp_group().rank}/{get_pp_group().ranks} start forward on the model.")
+            # start_rank_record = torch.cuda.Event(enable_timing=True)
+            # record_event.record()
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
             else:
                 hidden_states = self.get_input_embeddings(input_ids)
             residual = None
+            
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
-
-        # layer_fwd_start_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
-        # layer_fwd_end_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
+        
+         
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
-            # layer_fwd_start_list[i].record()
+            if self.collect_layer_fwd_time and i != self.start_layer:
+                start_event_list[i - self.start_layer].record()
             hidden_states, residual = layer(positions, hidden_states,
                                             kv_caches[i - self.start_layer],
                                             attn_metadata, residual)
-            # layer_fwd_end_list[i].record()
+            if self.collect_layer_fwd_time and i != self.end_layer - 1:
+                end_event_list[i - self.start_layer].record()
+            if self.offload_buffer is not None and i in self.offload_buffer.initial_offload_layers:
+                # record the the computation event for this layer
+                self.offload_buffer.compute_event.record()
         
-        # for i in range(self.start_layer, self.end_layer):    
-        #     layer_fwd_end_list[i].synchronize()
-        #     elapsed_time = layer_fwd_start_list[i].elapsed_time(layer_fwd_end_list[i])
-        #     logger.debug(f"Layer {i} forward time: {elapsed_time:.3f} ms")
-
-        if not get_pp_group().is_last_rank:
-            return IntermediateTensors({
+        logger.debug(f"PP Rank {get_pp_group().rank}/{get_pp_group().ranks} finish model forward {self.collect_layer_fwd_time}")   
+        if not get_pp_group().is_last_rank: 
+            hidden_states = IntermediateTensors({
                 "hidden_states": hidden_states,
                 "residual": residual
             })
-
-        hidden_states, _ = self.norm(hidden_states, residual)
+        else:
+            hidden_states, _ = self.norm(hidden_states, residual)
+        
+        # print the duration of each layer.
+        if self.collect_layer_fwd_time:
+            # record the computation event for the last layer
+            end_event_list[-1].record()    
+            for i in range(self.start_layer, self.end_layer):
+                end_event_list[i - self.start_layer].synchronize()
+                layer_fwd_time = start_event_list[i - self.start_layer].elapsed_time(end_event_list[i - self.start_layer])
+                logger.info(f"PP Rank {get_pp_group().rank}/{get_pp_group().ranks} Layer {i} elapsed time: {layer_fwd_time:.3f} ms, start_layer: {self.start_layer} end_layer: {self.end_layer}")
+            
+        if (get_pp_group().is_last_rank):
+            # print the timestamp of the last rank (GPU time)  --> calculate the total time (lastrank - first ranjk, from log information)
+            logger.info(f"[ {int(time.time() * 1000)} ] PP Rank {get_pp_group().rank}/{get_pp_group().ranks} stop forward on the model.")
+        
         return hidden_states
 
     def load_weights(self, weights: Iterable[Tuple[str,
@@ -416,7 +448,6 @@ class LlamaModel(nn.Module):
             (".gate_up_proj", ".up_proj", 1),
         ]
         params_dict = dict(self.named_parameters())
-        logger.debug(f"In LlamaModel's load_weights: Model parameters: {list(params_dict.keys())}")
         loaded_params: Set[str] = set()
         for name, loaded_weight in weights:
             if "rotary_emb.inv_freq" in name:
@@ -473,11 +504,11 @@ class LlamaModel(nn.Module):
         return loaded_params
     
     def maybe_offload(self):
-        if self.cache_config.cpu_offload_layers > 0:
-           for i in range(self.start_layer, self.end_layer):
-               self.layers[i] = self.offload_buffer.maybe_offload(self.layers[i], i, self.start_layer, self.end_layer)
-               device = next(self.layers[i].parameters()).device
-               print(f"+++++++LlamaModel.maybe_offloading layer {i} parameters device = {device}", flush=True) 
+        if self.offload_buffer is not None:
+           # using the smart offloading strategy to offload the model weights to CPU 
+            for i in range(self.start_layer, self.end_layer):
+                self.layers[i] = self.offload_buffer.maybe_offload(self.layers[i], i, 
+                                                                    self.start_layer, self.end_layer)
 
 
 class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):

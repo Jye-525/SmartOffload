@@ -1088,16 +1088,12 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         self.lora_manager: Optional[LRUCacheWorkerLoRAManager] = None
         self.prompt_adapter_manager: LRUCacheWorkerPromptAdapterManager = None
 
-        # if self.cache_config.cpu_offload_gb > 0:
-        #     set_cpu_offload_max_bytes(
-        #         int(self.cache_config.cpu_offload_gb * 1024**3))
-        # elif self.cache_config.cpu_offload_layers > 0:
-        #     # cpu offload based on number of layers
-        #     set_cpu_offload_max_layers(self.cache_config.cpu_offload_layers)
-        # else:
-        #     set_cpu_offload_max_bytes(0)
-        set_cpu_offload_max_bytes(
-                int(self.cache_config.cpu_offload_gb * 1024**3))
+        if self.cache_config.cpu_offload_config.method == "default":
+            set_cpu_offload_max_bytes(
+                int(self.cache_config.cpu_offload_config.cpu_offload_gb * 1024**3))
+        else:
+            # smart_offload case
+            set_cpu_offload_max_bytes(0)
 
         # Used to cache python objects
         self.inter_data_cache: Dict[int, PyObjectCache] = {}

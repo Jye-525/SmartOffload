@@ -99,6 +99,7 @@ class ExecutorBase(ABC):
         results = self.collective_rpc("determine_num_available_blocks")
         a = min([r[0] for r in results])
         b = min([r[1] for r in results])
+        logger.info(f"Available blocks on each work, GPU blocks: {[r[0] for r in results]} CPU blocks: {[r[1] for r in results]}")
         return a, b
 
     def initialize_cache(self, num_gpu_blocks: int, num_cpu_blocks) -> None:

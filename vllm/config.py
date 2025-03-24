@@ -607,6 +607,8 @@ class ModelConfig:
         self.max_seq_len_to_capture = min(self.max_seq_len_to_capture,
                                           self.max_model_len)
 
+        logger.debug("Max sequence length to capture: %s",
+                     self.max_seq_len_to_capture)
         MODEL_NOT_SUPPORT_CUDA_GRAPH = ['mllama']
         if (self.hf_config.model_type in MODEL_NOT_SUPPORT_CUDA_GRAPH
                 and not self.enforce_eager):
@@ -952,6 +954,56 @@ class ModelConfig:
     def runner_type(self) -> RunnerType:
         return _TASK_RUNNER[self.task]
 
+@dataclass
+class CPUOffloadConfig:
+    """Configuration for the CPU offload (i.e., model weights offload to CPU).
+
+    Args:
+        method: Method to offload the model weights to CPU (choices: "default", "smart_offload")
+        offload_gb: Size of the CPU offload buffer in GiB. This is for the default approach.
+        # the following parameters are for the smart offload approach.
+        offload_layers: A list of layer indices to offload to CPU.
+        param_offload_target: Which parameters to offload from the given layers.
+    """
+    method: str
+    cpu_offload_gb: float
+    cpu_offload_layers: Optional[List[int]] = None
+    param_offload_target: str = "all"
+
+    def compute_hash(self) -> str:
+        """
+        WARNING: Whenever a new field is added to this config,
+        ensure that it is included in the factors list if
+        it affects the computation graph.
+
+        Provide a hash that uniquely identifies all the configs
+        that affect the structure of the computation
+        graph from input ids/embeddings to the final hidden states,
+        excluding anything before input ids/embeddings and after
+        the final hidden states.
+        """
+        # no factors to consider.
+        # this config will not affect the computation graph.
+        factors: List[Any] = []
+        hash_str = hashlib.md5(str(factors).encode()).hexdigest()
+        return hash_str
+
+    @classmethod
+    def create_config(
+        cls, offload_method: str = "default", 
+        offload_gb: float = 0, 
+        offload_layers: Optional[List[int]] = None,
+        param_offload_target: str = "all"
+    ) -> Optional["CPUOffloadConfig"]:
+        """Create a CPUOffloadConfig from the given parameters.
+
+        Args:
+            method: Method to offload the model weights to CPU (choices: "default", "smart_offload")
+            offload_gb: Size of the CPU offload buffer in GiB. This is for the default approach.
+            offload_layers: A list of layer indices to offload to CPU.
+            param_offload_target: Which parameters to offload from the given layers.
+        """
+        return cls(offload_method, offload_gb, offload_layers, param_offload_target)
 
 class CacheConfig:
     """Configuration for the KV cache.
@@ -968,9 +1020,7 @@ class CacheConfig:
         sliding_window: Sliding window size for the KV cache. Can not work with
             prefix caching enabled.
         enable_prefix_caching: Whether to enable prefix caching.
-        cpu_offload_gb: Size of the CPU offload buffer in GiB.
-        cpu_offload_layers: Number of layers to offload to CPU. 
-        cpu_offload_type: Type of CPU offload.
+        cpu_offload_config: Configuration for the CPU offload.
     """
 
     def compute_hash(self) -> str:
@@ -1001,9 +1051,7 @@ class CacheConfig:
         num_gpu_blocks_override: Optional[int] = None,
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
-        cpu_offload_gb: float = 0,
-        cpu_offload_layers: int = 0,
-        cpu_offload_type: str = None,
+        cpu_offload_config: CPUOffloadConfig = CPUOffloadConfig.create_config(),
         calculate_kv_scales: Optional[bool] = None,
     ) -> None:
         self.block_size = block_size
@@ -1014,9 +1062,7 @@ class CacheConfig:
         self.is_attention_free = is_attention_free
         self.sliding_window = sliding_window
         self.enable_prefix_caching = enable_prefix_caching
-        self.cpu_offload_gb = cpu_offload_gb
-        self.cpu_offload_layers = cpu_offload_layers
-        self.cpu_offload_type = cpu_offload_type
+        self.cpu_offload_config = cpu_offload_config
         self.calculate_kv_scales = calculate_kv_scales
         self._verify_args()
         self._verify_cache_dtype()
@@ -1040,9 +1086,9 @@ class CacheConfig:
             raise ValueError(
                 "GPU memory utilization must be less than 1.0. Got "
                 f"{self.gpu_memory_utilization}.")
-        if self.cpu_offload_gb > 0 and self.cpu_offload_layers > 0:
+        if self.cpu_offload_config.cpu_offload_gb > 0 and self.cpu_offload_config.cpu_offload_layers is not None:
             raise ValueError(
-                "-- cpu_offload_gb and cpu_offload_layers can not be set at the same time."
+                "--cpu-offload-gb and --cpu-offload-layers can not be set at the same time."
             )
 
     def _verify_cache_dtype(self) -> None:
@@ -2082,7 +2128,8 @@ class LoRAConfig:
 
     def verify_with_cache_config(self, cache_config: CacheConfig):
         # TODO LoRA supports CPU offload.
-        if cache_config.cpu_offload_gb > 0:
+        if (cache_config.cpu_offload_config.cpu_offload_gb > 0) or \
+        (cache_config.cpu_offload_config.cpu_offload_layers is not None):
             raise ValueError("CPU offload is not supported with LoRA yet.")
 
     def verify_with_model_config(self, model_config: ModelConfig):
@@ -2999,6 +3046,9 @@ class VllmConfig:
     # for the hash computation, mainly used for testing and debugging.
     additional_config: SupportsHash = field(default=None,
                                             init=True)  # type: ignore
+    
+    collect_layer_fwd_time: bool = False
+    
     instance_id: str = ""
 
     def compute_hash(self) -> str:
@@ -3197,12 +3247,19 @@ class VllmConfig:
         self._set_cudagraph_sizes()
 
         if self.cache_config is not None and \
-            self.cache_config.cpu_offload_gb > 0 and \
+            self.cache_config.cpu_offload_config.cpu_offload_gb > 0 and \
             self.compilation_config.level != CompilationLevel.NO_COMPILATION:
             logger.warning(
                 "CPU offload is not supported with `torch.compile` yet."
                 " Disabling `torch.compile`.")
             self.compilation_config.level = CompilationLevel.NO_COMPILATION
+            
+        if self.cache_config is not None and \
+            self.cache_config.cpu_offload_config.cpu_offload_layers is not None and \
+            self.compilation_config.level != CompilationLevel.NO_COMPILATION:
+            logger.warning(
+                "CPU offload is not supported with `torch.compile` yet."
+                " Disabling `torch.compile`.")
 
         if self.lora_config is not None and self.compilation_config.level !=\
              CompilationLevel.NO_COMPILATION:
@@ -3313,7 +3370,8 @@ class VllmConfig:
             f"disable_mm_preprocessor_cache={self.model_config.disable_mm_preprocessor_cache!r}, "  # noqa
             f"mm_processor_kwargs={self.model_config.mm_processor_kwargs}, "
             f"pooler_config={self.model_config.pooler_config!r}, "
-            f"compilation_config={self.compilation_config!r}")
+            f"compilation_config={self.compilation_config!r}"
+            f"collect_layer_fwd_time={self.collect_layer_fwd_time}")
 
 
 _current_vllm_config: Optional[VllmConfig] = None
