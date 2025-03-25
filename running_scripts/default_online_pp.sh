@@ -5,15 +5,15 @@ source $PROJ_PATH/vllm_env_vars_ray
 
 echo "Start running default_online_pp.sh ..."
 
-num_reqs=(64 128)
+num_reqs=(1)
 offload_type=0 # 0: no offloading, 1: smart_offload
 #  "prompt_only" "decode_only"  "prompt_decode"
 test_cases=("prompt_only")
 
-PP=4
+PP=24
 TP=1
-model="deepseek-ai/deepseek-coder-33b-base"
-#model="deepseek-ai/deepseek-coder-33b-large"
+#model="deepseek-ai/deepseek-coder-33b-base"
+model="meta-llama/Llama-3.1-405B"
 model_path="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
 exec_path="${HOME}/moe_mix_precision/SmartOffload_polaris/benchmarks"
 executor_backend="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
@@ -21,7 +21,7 @@ exec_mode="eager"
 USE_PROFILING=0
 
 model_name=$(echo $model | cut -d'/' -f2)
-LOG_PATH="${HOME}/moe_mix_precision/SmartOffload_polaris/running_scripts/logs_${model_name}_tp${TP}_pp${PP}"
+LOG_PATH="${HOME}/moe_mix_precision/SC25_logs/logs_${model_name}_tp${TP}_pp${PP}"
 
 [ -d $LOG_PATH ] || mkdir -p $LOG_PATH
 
