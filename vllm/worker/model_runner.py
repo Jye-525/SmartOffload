@@ -1714,8 +1714,9 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             "finished_requests_ids": model_input.finished_requests_ids,
             "request_ids_to_seq_ids": model_input.request_ids_to_seq_ids,
         } if self.has_inner_state else {}
-        if (self.observability_config is not None
-                and self.observability_config.collect_model_forward_time):
+        if ((self.observability_config is not None
+                and self.observability_config.collect_model_forward_time) 
+            or (self.vllm_config.collect_layer_fwd_time)):
             model_forward_start = torch.cuda.Event(enable_timing=True)
             model_forward_end = torch.cuda.Event(enable_timing=True)
             model_forward_start.record()
@@ -1733,8 +1734,9 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
                                                  device=self.device),
                     **seqlen_agnostic_kwargs)
 
-        if (self.observability_config is not None
-                and self.observability_config.collect_model_forward_time):
+        if ((self.observability_config is not None
+                and self.observability_config.collect_model_forward_time) 
+            or (self.vllm_config.collect_layer_fwd_time)):
             model_forward_end.record()
 
         # Sending KV cache in distributed KV cache transfer setting
@@ -1756,8 +1758,9 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
                     and hidden_or_intermediate_states is not None
                     and isinstance(hidden_or_intermediate_states,
                                    IntermediateTensors)
-                    and self.observability_config is not None
-                    and self.observability_config.collect_model_forward_time):
+                    and ((self.observability_config is not None
+                    and self.observability_config.collect_model_forward_time)
+                    or (self.vllm_config.collect_layer_fwd_time))):
                 model_forward_end.synchronize()
                 model_forward_time = model_forward_start.elapsed_time(
                     model_forward_end)
@@ -1769,8 +1772,16 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
                     torch.tensor(model_forward_time + orig_model_forward_time))
             return hidden_or_intermediate_states
 
+        if self.vllm_config.collect_layer_fwd_time:
+            cmp_logits_start = torch.cuda.Event(enable_timing=True)
+            cmp_logits_end = torch.cuda.Event(enable_timing=True)
+            cmp_logits_start.record()
+            
         logits = self.model.compute_logits(hidden_or_intermediate_states,
-                                           model_input.sampling_metadata)
+                                        model_input.sampling_metadata)
+        
+        if self.vllm_config.collect_layer_fwd_time:
+            cmp_logits_end.record()
 
         if not self.is_driver_worker:
             return []
@@ -1778,14 +1789,25 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         if model_input.async_callback is not None:
             model_input.async_callback()
 
+        if self.vllm_config.collect_layer_fwd_time:
+            sample_start = torch.cuda.Event(enable_timing=True)
+            sample_end = torch.cuda.Event(enable_timing=True)
+            sample_start.record()
+            
         # Sample the next token.
         output: SamplerOutput = self.model.sample(
             logits=logits,
             sampling_metadata=model_input.sampling_metadata,
         )
-        if (self.observability_config is not None
+        
+        if self.vllm_config.collect_layer_fwd_time:
+            sample_end.record()
+        
+        
+        if ((self.observability_config is not None
                 and self.observability_config.collect_model_forward_time
-                and output is not None):
+                and output is not None)
+            or (self.vllm_config.collect_layer_fwd_time)):
             model_forward_end.synchronize()
             model_forward_time = model_forward_start.elapsed_time(
                 model_forward_end)
@@ -1797,8 +1819,19 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             # from the start time of the driver worker to the end time of the
             # driver worker. The model forward time will then end up covering
             # the communication time as well.
-            output.model_forward_time = (orig_model_forward_time +
-                                         model_forward_time)
+            if self.vllm_config.collect_layer_fwd_time == False: 
+                output.model_forward_time = (orig_model_forward_time +
+                                            model_forward_time)
+            else:
+                # get compute_logits() and sample, minus these two from model_fwd_time.
+                cmp_logits_end.synchronize()
+                cmp_logits_time = cmp_logits_start.elapsed_time(cmp_logits_end)
+                sample_end.synchronize()
+                sample_time = sample_start.elapsed_time(sample_end)
+                e2e_model_fwd_time = (orig_model_forward_time + model_forward_time) 
+                e2e_model_fwd_time_1 = e2e_model_fwd_time - cmp_logits_time - sample_time
+                logger.info(f"Per iteration model forward time {e2e_model_fwd_time:.3f} ms e2e_fwd_no_logits_sample time {e2e_model_fwd_time_1:.3f} ms")
+                
 
         if self.return_hidden_states:
             # we only need to pass hidden states of most recent token

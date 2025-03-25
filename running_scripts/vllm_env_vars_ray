@@ -1,0 +1,22 @@
+## Note: since my env use the ray on conda/2024-10-30-workshop, which will run using the 
+## SO we need to copy ray to my virtural environment, and change its python to my python
+#cp /soft/applications/conda/2024-10-30-workshop/mconda3/bin/ray /home/jieye/venvs/vllm_moe/bin/
+
+IF_NAME=hsn0
+export HOST_IP=`ip -4 addr show $IF_NAME | grep -oP '(?<=inet\s)\d+(\.\d+){3}'`
+
+# ray related env variables
+export RAY_TMPDIR=/tmp/vllm_jye/vllm_ray
+export VLLM_WORKER_MULTIPROC_METHOD=fork
+export OMP_NUM_THREADS=1
+export RAY_COLOR_PREFIX=0
+export RAY_DEDUP_LOGS=0 
+
+# vLLM related variables
+export VLLM_HOST_IP=$HOST_IP
+export VLLM_RPC_BASE_PATH=/tmp/vllm_jye/vllm_ipc/
+export TRITON_CACHE_DIR=/tmp/vllm_jye/triton_cache/
+export VLLM_CACHE_ROOT=/tmp/vllm_jye/vllm_cache/
+export TOKENIZERS_PARALLELISM=false
+export VLLM_LOGGING_LEVEL=DEBUG
+#export VLLM_TORCH_PROFILER_DIR=$HOME/vllm_traces/

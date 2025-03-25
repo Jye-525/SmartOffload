@@ -338,6 +338,7 @@ class ModelConfig:
             sliding_window_len=self.get_hf_config_sliding_window(),
             spec_target_max_model_len=spec_target_max_model_len,
             encoder_config=self.encoder_config)
+        logger.info(f"Get Max model length {self.max_model_len} from hf config")
         self.served_model_name = get_served_model_name(model,
                                                        served_model_name)
         self.multimodal_config = self._init_multimodal_config(
@@ -3049,6 +3050,8 @@ class VllmConfig:
     
     collect_layer_fwd_time: bool = False
     
+    log_stats_interval: Optional[float] = None
+    
     instance_id: str = ""
 
     def compute_hash(self) -> str:
@@ -3271,6 +3274,9 @@ class VllmConfig:
 
         if not self.instance_id:
             self.instance_id = random_uuid()[:5]
+            
+        if self.log_stats_interval is not None:
+           assert self.log_stats_interval > 0, "log_stats_interval must be positive" 
 
     def _set_cudagraph_sizes(self):
         """
@@ -3338,30 +3344,32 @@ class VllmConfig:
 
     def __str__(self):
         return (
-            f"model={self.model_config.model!r},"
-            f" speculative_config={self.speculative_config!r},"
-            f" tokenizer={self.model_config.tokenizer!r}, "
-            f"skip_tokenizer_init={self.model_config.skip_tokenizer_init},"
-            f" tokenizer_mode={self.model_config.tokenizer_mode}, "
+            f"model={self.model_config.model!r}, "
+            f"speculative_config={self.speculative_config!r}, "
+            f"tokenizer={self.model_config.tokenizer!r}, "
+            f"skip_tokenizer_init={self.model_config.skip_tokenizer_init}, "
+            f"tokenizer_mode={self.model_config.tokenizer_mode}, "
             f"revision={self.model_config.revision}, "
-            f"override_neuron_config={self.model_config.override_neuron_config},"
-            f" tokenizer_revision={self.model_config.tokenizer_revision}, "
+            f"override_neuron_config={self.model_config.override_neuron_config}, "
+            f"tokenizer_revision={self.model_config.tokenizer_revision}, "
             f"trust_remote_code={self.model_config.trust_remote_code}, "
             f"dtype={self.model_config.dtype}, "
-            f"max_seq_len={self.model_config.max_model_len},"
-            f" download_dir={self.load_config.download_dir!r}, "
+            f"max_seq_len={self.model_config.max_model_len}, "
+            f"download_dir={self.load_config.download_dir!r}, "
             f"load_format={self.load_config.load_format}, "
-            f"tensor_parallel_size={self.parallel_config.tensor_parallel_size},"
-            f" pipeline_parallel_size={self.parallel_config.pipeline_parallel_size}, "  # noqa
+            f"tensor_parallel_size={self.parallel_config.tensor_parallel_size}, "
+            f"pipeline_parallel_size={self.parallel_config.pipeline_parallel_size}, "  # noqa
             f"disable_custom_all_reduce={self.parallel_config.disable_custom_all_reduce}, "  # noqa
             f"quantization={self.model_config.quantization}, "
             f"enforce_eager={self.model_config.enforce_eager}, "
             f"kv_cache_dtype={self.cache_config.cache_dtype}, "
-            f" device_config={self.device_config.device}, "
+            f"device_config={self.device_config.device}, "
             f"decoding_config={self.decoding_config!r}, "
             f"observability_config={self.observability_config!r}, "
             f"seed={self.model_config.seed}, "
             f"served_model_name={self.model_config.served_model_name}, "
+            f"max_num_seqs={self.scheduler_config.max_num_seqs}, "
+            f"max_num_batched_tokens={self.scheduler_config.max_num_batched_tokens}, "
             f"num_scheduler_steps={self.scheduler_config.num_scheduler_steps}, "
             f"multi_step_stream_outputs={self.scheduler_config.multi_step_stream_outputs}, "  # noqa
             f"enable_prefix_caching={self.cache_config.enable_prefix_caching}, "
@@ -3370,8 +3378,9 @@ class VllmConfig:
             f"disable_mm_preprocessor_cache={self.model_config.disable_mm_preprocessor_cache!r}, "  # noqa
             f"mm_processor_kwargs={self.model_config.mm_processor_kwargs}, "
             f"pooler_config={self.model_config.pooler_config!r}, "
-            f"compilation_config={self.compilation_config!r}"
-            f"collect_layer_fwd_time={self.collect_layer_fwd_time}")
+            f"compilation_config={self.compilation_config!r}, "
+            f"collect_layer_fwd_time={self.collect_layer_fwd_time}, "
+            f"log_stats_interval={self.log_stats_interval}")
 
 
 _current_vllm_config: Optional[VllmConfig] = None

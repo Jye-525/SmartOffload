@@ -34,6 +34,7 @@ from vllm.sequence import ExecuteModelRequest
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import deprecate_kwargs, weak_bind
+from vllm.inputs.data import DecoderOnlyInputs, ProcessorInputs, TokenInputs
 
 logger = init_logger(__name__)
 ENGINE_ITERATION_TIMEOUT_S = envs.VLLM_ENGINE_ITERATION_TIMEOUT_S
@@ -298,6 +299,7 @@ class _AsyncLLMEngine(LLMEngine):
              allow_async_output_proc
              ) = self.scheduler[virtual_engine].schedule()
 
+            # logger.info(f"Scheduler with virtual engine {virtual_engine} scheduled {len(seq_group_metadata_list)} requests to perform inference.")
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
 
@@ -508,7 +510,7 @@ class _AsyncLLMEngine(LLMEngine):
                 default_guided_backend=self.decoding_config.
                 guided_decoding_backend,
                 model_config=self.model_config)
-
+         
         self._add_processed_request(
             request_id=request_id,
             processed_inputs=processed_inputs,
@@ -728,6 +730,7 @@ class AsyncLLMEngine(EngineClient):
         new_requests, aborted_requests = (
             self._request_tracker.get_new_and_aborted_requests())
 
+        # logger.debug(f"AsyncLLMEngine.engine_step processing new requests {len(new_requests)} using virtual engine {virtual_engine}")
         for new_request in new_requests:
             # Add the request into the vLLM engine's waiting queue.
             try:

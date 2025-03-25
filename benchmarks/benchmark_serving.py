@@ -364,6 +364,42 @@ def sample_random_requests(
 
     return input_requests
 
+def sample_fixedlen_requests(
+    input_len: int,
+    output_len: int,
+    num_prompts: int,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List[Tuple[str, int, int]]:
+    # offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
+    offset = np.random.randint(0, tokenizer.vocab_size)
+    # get a prompt
+    token_ids = [(offset + i) % tokenizer.vocab_size for i in range(input_len)]
+    prompt = tokenizer.decode(token_ids)
+    # Verify the prompt tokenizes back to the correct length
+    verified_token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+    while len(verified_token_ids) != input_len:
+        # Adjust by adding or removing tokens
+        if len(verified_token_ids) > input_len:
+            # Remove extra tokens by truncating the prompt
+            prompt = tokenizer.decode(verified_token_ids[:input_len])
+        else:
+            # Append tokens to reach the desired length
+            remaining = input_len - len(verified_token_ids)
+            extra_tokens = [(offset + input_len + j) % tokenizer.vocab_size 
+                           for j in range(remaining)]
+            prompt = tokenizer.decode(token_ids + extra_tokens)
+        
+        # Re-verify
+        verified_token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+        
+     
+    input_requests = []
+    for i in range(num_prompts):
+        input_requests.append((prompt, int(input_len),
+                               int(output_len), None))
+
+    return input_requests
+
 
 async def get_request(
     input_requests: List[Tuple[str, int, int]],
@@ -545,6 +581,7 @@ async def benchmark(
     print("Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = (
         input_requests[0])
+    test_output_len = 5 # For testing purposes, we set the output length to 5
     if backend != "openai-chat" and test_mm_content is not None:
         # multi-modal benchmark is only available on OpenAI Chat backend.
         raise ValueError(
@@ -561,6 +598,7 @@ async def benchmark(
         multi_modal_content=test_mm_content,
         ignore_eos=ignore_eos,
     )
+    print(f"Test prompt request: prompt_len={test_prompt_len}, output_len={test_output_len}")
     test_output = await request_func(request_func_input=test_input)
     if not test_output.success:
         raise ValueError(
@@ -615,6 +653,7 @@ async def benchmark(
     tasks: List[asyncio.Task] = []
     async for request in get_request(input_requests, request_rate, burstiness):
         prompt, prompt_len, output_len, mm_content = request
+        print(f"Request: prompt_len={prompt_len}, output_len={output_len}")
         request_func_input = RequestFuncInput(model=model_id,
                                               model_name=model_name,
                                               prompt=prompt,
@@ -867,6 +906,13 @@ def main(args: argparse.Namespace):
             range_ratio=args.random_range_ratio,
             tokenizer=tokenizer,
         )
+    elif args.dataset_name == "fixed-len":
+        input_requests = sample_fixedlen_requests( 
+            input_len=args.fixed_input_len,
+            output_len=args.fixed_output_len,
+            num_prompts=args.num_prompts,
+            tokenizer=tokenizer,
+        )
 
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
@@ -981,7 +1027,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "sonnet", "random", "hf"],
+        choices=["sharegpt", "sonnet", "random", "fixed-len", "hf"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument("--dataset-path",
@@ -1201,6 +1247,22 @@ if __name__ == "__main__":
         " context. The length range of context in a random "
         " request is [random-prefix-len, "
         " random-prefix-len + random-prefix-len * random-range-ratio).")
+    
+    fixed_group = parser.add_argument_group("fixed-len dataset options")
+    fixed_group.add_argument(
+        "--fixed-input-len",
+        type=int,
+        default=1024,
+        help=
+        "Number of input tokens per request, used only for fixed-len sampling.",
+    )
+    fixed_group.add_argument(
+        "--fixed-output-len",
+        type=int,
+        default=128,
+        help=
+        "Number of output tokens per request, used only for fixed sampling.",
+    ) 
 
     hf_group = parser.add_argument_group("hf dataset options")
     hf_group.add_argument("--hf-subset",

@@ -363,6 +363,7 @@ class LlamaModel(nn.Module):
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
+        self.fwd_counts = 0
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -383,9 +384,8 @@ class LlamaModel(nn.Module):
             start_event_list[0].record()
         
         if get_pp_group().is_first_rank:
-            # fwd_start_time = time.perf_counter()
             # print the timestamp of the first rank (GPU time)
-            logger.info(f"[ {int(time.time() * 1000)} ] PP Rank {get_pp_group().rank}/{get_pp_group().ranks} start forward on the model.")
+            logger.info(f"[ unit:ns {time.time_ns()} ] PP Rank {get_pp_group().rank}/{get_pp_group().ranks} start forward on the model, fwd_counts: {self.fwd_counts} input_ids.shape: {input_ids.shape[0]}")
             # start_rank_record = torch.cuda.Event(enable_timing=True)
             # record_event.record()
             if inputs_embeds is not None:
@@ -413,7 +413,6 @@ class LlamaModel(nn.Module):
                 # record the the computation event for this layer
                 self.offload_buffer.compute_event.record()
         
-        logger.debug(f"PP Rank {get_pp_group().rank}/{get_pp_group().ranks} finish model forward {self.collect_layer_fwd_time}")   
         if not get_pp_group().is_last_rank: 
             hidden_states = IntermediateTensors({
                 "hidden_states": hidden_states,
@@ -429,12 +428,13 @@ class LlamaModel(nn.Module):
             for i in range(self.start_layer, self.end_layer):
                 end_event_list[i - self.start_layer].synchronize()
                 layer_fwd_time = start_event_list[i - self.start_layer].elapsed_time(end_event_list[i - self.start_layer])
-                logger.info(f"PP Rank {get_pp_group().rank}/{get_pp_group().ranks} Layer {i} elapsed time: {layer_fwd_time:.3f} ms, start_layer: {self.start_layer} end_layer: {self.end_layer}")
+                logger.info(f"PP Rank {get_pp_group().rank}/{get_pp_group().ranks} Layer {i} elapsed time: {layer_fwd_time:.3f} ms, start_layer: {self.start_layer} end_layer: {self.end_layer} fwd_counts: {self.fwd_counts} input_ids.shape: {input_ids.shape[0]} ")
             
         if (get_pp_group().is_last_rank):
             # print the timestamp of the last rank (GPU time)  --> calculate the total time (lastrank - first ranjk, from log information)
-            logger.info(f"[ {int(time.time() * 1000)} ] PP Rank {get_pp_group().rank}/{get_pp_group().ranks} stop forward on the model.")
+            logger.info(f"[ unit:ns {time.time_ns()} ] PP Rank {get_pp_group().rank}/{get_pp_group().ranks} stop forward on the model. fwd_counts: {self.fwd_counts} input_ids.shape: {input_ids.shape[0]} ")
         
+        self.fwd_counts += 1
         return hidden_states
 
     def load_weights(self, weights: Iterable[Tuple[str,

@@ -365,11 +365,11 @@ class LLMEngine:
                 # See https://prometheus.github.io/client_python/multiprocess/
                 from vllm.engine.metrics import (LoggingStatLogger,
                                                  PrometheusStatLogger)
-
                 self.stat_loggers = {
                     "logging":
                     LoggingStatLogger(
-                        local_interval=_LOCAL_LOGGING_INTERVAL_SEC,
+                        # local_interval=_LOCAL_LOGGING_INTERVAL_SEC,
+                        local_interval=_LOCAL_LOGGING_INTERVAL_SEC if vllm_config.log_stats_interval is None else vllm_config.log_stats_interval,
                         vllm_config=vllm_config),
                     "prometheus":
                     PrometheusStatLogger(
@@ -588,7 +588,7 @@ class LLMEngine:
         encoder_seq = (None if encoder_inputs is None else Sequence(
             seq_id, encoder_inputs, block_size, eos_token_id, lora_request,
             prompt_adapter_request))
-
+ 
         # Create a SequenceGroup based on SamplingParams or PoolingParams
         if isinstance(params, SamplingParams):
             seq_group = self._create_sequence_group_with_sampling(
@@ -620,9 +620,12 @@ class LLMEngine:
             scheduler.get_num_unfinished_seq_groups()
             for scheduler in self.scheduler
         ]
-        min_cost_scheduler = self.scheduler[costs.index(min(costs))]
+        min_cost_scheduler_idx = costs.index(min(costs))
+        min_cost_scheduler = self.scheduler[min_cost_scheduler_idx]
         min_cost_scheduler.add_seq_group(seq_group)
-
+        
+        logger.info(f"LLMEngine adding new request {request_id} with prompt_len {len(seq.prompt_token_ids)} to scheduler {min_cost_scheduler_idx} (schduler costs: {costs})")
+        
         return seq_group
 
     def stop_remote_worker_execution_loop(self) -> None:

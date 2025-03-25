@@ -215,6 +215,8 @@ class EngineArgs:
     calculate_kv_scales: Optional[bool] = None
     
     collect_layer_fwd_time: bool = False
+    
+    log_stats_interval: Optional[float] = None
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -1004,6 +1006,13 @@ class EngineArgs:
             action='store_true',
             help='If collecting transformer layer forward time in logs. This is useful '
             'for performance analysis.')
+        
+        parser.add_argument(
+            '--log-stats-interval',
+            type=float,
+            default=EngineArgs.log_stats_interval,
+            help='If set, the engine will log statistics every x seconds.')
+    
 
         return parser
 
@@ -1238,7 +1247,8 @@ class EngineArgs:
                 "If your use case is not supported by "
                 "SelfAttnBlockSpaceManager (i.e. block manager v2),"
                 " please file an issue with detailed information.")
-
+        logger.debug(f"Before creating Scheduler config: runner_type={model_config.runner_type}, max_num_batched_tokens={self.max_num_batched_tokens}, " 
+                     f"max_num_seqs={self.max_num_seqs}, max_model_len={model_config.max_model_len}, enable_chunked_prefill={self.enable_chunked_prefill}, preemption_mode={self.preemption_mode}")
         scheduler_config = SchedulerConfig(
             runner_type=model_config.runner_type,
             max_num_batched_tokens=self.max_num_batched_tokens,
@@ -1254,6 +1264,8 @@ class EngineArgs:
             send_delta_data=(envs.VLLM_USE_RAY_SPMD_WORKER
                              and parallel_config.use_ray),
             policy=self.scheduling_policy)
+        logger.debug(f"After creating Scheduler config: runner_type={model_config.runner_type}, max_num_batched_tokens={scheduler_config.max_num_batched_tokens}, " 
+                     f"max_num_seqs={scheduler_config.max_num_seqs}, max_model_len={model_config.max_model_len}, enable_chunked_prefill={scheduler_config.enable_chunked_prefill}, preemption_mode={scheduler_config.preemption_mode}")
         lora_config = LoRAConfig(
             bias_enabled=self.enable_lora_bias,
             max_lora_rank=self.max_lora_rank,
@@ -1313,6 +1325,7 @@ class EngineArgs:
             compilation_config=self.compilation_config,
             kv_transfer_config=self.kv_transfer_config,
             collect_layer_fwd_time=self.collect_layer_fwd_time,
+            log_stats_interval=self.log_stats_interval
         )
 
         if envs.VLLM_USE_V1:
