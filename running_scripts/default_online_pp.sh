@@ -5,24 +5,24 @@ source $PROJ_PATH/vllm_env_vars_ray
 
 echo "Start running default_online_pp.sh ..."
 
-num_reqs=(2)
+num_reqs=(1)
 offload_type=0 # 0: no offloading, 1: smart_offload
 #  "prompt_only" "decode_only"  "prompt_decode"
 test_cases=("prompt_only")
 
-PP=2
+PP=1
 TP=4
-# model="deepseek-ai/deepseek-coder-33b-base"
+model="deepseek-ai/deepseek-coder-33b-base"
 # model="meta-llama/Llama-3.3-70B-Instruct"
 # model="alpindale/goliath-120b"
-model="meta-llama/Llama-3.1-405B"
+# model="meta-llama/Llama-3.1-405B"
 model_path="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
 exec_path="${HOME}/moe_mix_precision/SmartOffload_polaris/benchmarks"
 executor_backend="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
 exec_mode="eager"
 USE_PROFILING=0
 max_model_len=32768
-gpu_memory_limit=0.81
+gpu_memory_limit=0.8
 log_stats_interval=1 # in seconds
 try_nums=2
 
@@ -102,9 +102,10 @@ if [ $offload_type -eq 0 ]; then
         echo "Start running without offloading ... using test case ${test_case}"
         if [ "$test_case" = "prompt_only" ]; then
             # prompt_lens=(511 1023 2047 4095 8191)
-            prompt_lens=(32767)
+            # prompt_lens=(8191 16383 32767)
+            prompt_lens=(8191)
             decode_len=1
-            for try_idx in range(try_nums); do
+            for try_idx in $(seq 1 $try_nums); do
                 for num_req in ${num_reqs[@]}; do
                     for prompt_len in ${prompt_lens[@]}; do
                         echo "Start with prompt length ${prompt_len} and decode length ${decode_len} ..."
