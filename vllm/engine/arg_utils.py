@@ -215,6 +215,7 @@ class EngineArgs:
     calculate_kv_scales: Optional[bool] = None
     
     collect_layer_fwd_time: bool = False
+    collect_attn_mlp_fwd_time: bool = False
     
     log_stats_interval: Optional[float] = None
 
@@ -1008,6 +1009,12 @@ class EngineArgs:
             'for performance analysis.')
         
         parser.add_argument(
+            '--collect-attn-mlp-fwd-time',
+            action='store_true',
+            help='If collecting the attention and mlp module time in each transformer layer in logs.' 
+            'This is useful for performance analysis. If set, --collect-layer-fwd-time must be set too.')
+        
+        parser.add_argument(
             '--log-stats-interval',
             type=float,
             default=EngineArgs.log_stats_interval,
@@ -1325,6 +1332,7 @@ class EngineArgs:
             compilation_config=self.compilation_config,
             kv_transfer_config=self.kv_transfer_config,
             collect_layer_fwd_time=self.collect_layer_fwd_time,
+            collect_attn_mlp_fwd_time = self.collect_attn_mlp_fwd_time,
             log_stats_interval=self.log_stats_interval
         )
 

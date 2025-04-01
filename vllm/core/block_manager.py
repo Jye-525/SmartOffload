@@ -12,6 +12,8 @@ from vllm.core.block.utils import check_no_caching_or_swa_for_blockmgr_encdec
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 from vllm.utils import Device
+from vllm.logger import init_logger
+logger = init_logger(__name__)
 
 SeqId = int
 EncoderSeqId = str
@@ -135,6 +137,10 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         num_free_gpu_blocks = self.block_allocator.get_num_free_blocks(
             device=Device.GPU)
 
+        logger.debug(f"BlockManager check if can allocate kv cache blocks for seq_group {seq_group.request_id}." 
+                         f" total_gpu_blocks: {self.num_total_gpu_blocks} free_gpu_blocks: {num_free_gpu_blocks}"
+                         f" num_required_blocks: {num_required_blocks} watermark_blocks: {self.watermark_blocks} "
+                         f" watermark: {self.watermark} ")
         # Use watermark to avoid frequent cache eviction.
         if (self.num_total_gpu_blocks - num_required_blocks <
                 self.watermark_blocks):

@@ -13,6 +13,7 @@ from torch.distributed import TCPStore
 
 import vllm.envs as envs
 from vllm.logger import init_logger
+import math
 
 logger = init_logger(__name__)
 
@@ -81,12 +82,23 @@ def get_pp_indices(num_hidden_layers: int, pp_rank: int,
         start_layer = sum(partitions[:pp_rank])
         end_layer = start_layer + partitions[pp_rank]
     else:
-        layers_per_partition = num_hidden_layers // pp_size
-        start_layer = pp_rank * layers_per_partition
-        end_layer = start_layer + layers_per_partition
+        ## Previous method (introduce imbalance)
+        # layers_per_partition = num_hidden_layers // pp_size
+        # start_layer = pp_rank * layers_per_partition
+        # end_layer = start_layer + layers_per_partition
 
-        if pp_rank == pp_size - 1:
-            end_layer = num_hidden_layers
+        # if pp_rank == pp_size - 1:
+        #     end_layer = num_hidden_layers
+        ## After optimization
+        base_layers = num_hidden_layers // pp_size
+        remainder = num_hidden_layers % pp_size
+        
+        if pp_rank < remainder:
+            start_layer = pp_rank * (base_layers + 1)
+            end_layer = start_layer + (base_layers + 1)
+        else:
+            start_layer = remainder * (base_layers + 1) + (pp_rank - remainder) * base_layers
+            end_layer = start_layer + base_layers
 
     return (start_layer, end_layer)
 

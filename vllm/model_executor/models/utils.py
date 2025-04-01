@@ -13,7 +13,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.multimodal import MultiModalPlaceholderMap, NestedTensors
 from vllm.sequence import IntermediateTensors
-from vllm.utils import is_pin_memory_available
+from vllm.utils import is_pin_memory_available, MiB_bytes
 from vllm.spec_decode.util import nvtx_range
 
 logger = init_logger(__name__)
@@ -490,6 +490,10 @@ def maybe_offload_to_cpu(module: torch.nn.Module, layer_idx) -> torch.nn.Module:
         return module
 
     global _CPU_OFFLOAD_MAX_BYTES, _CPU_OFFLOAD_BYTES
+    if _CPU_OFFLOAD_MAX_BYTES == 0 and (layer_idx == 0 or layer_idx == 1):
+        for name, p in module.named_parameters():
+            logger.debug(f"Layer {layer_idx} with parameter name: {name}, weights_tensor_shape: {p.data.shape}, weights_size: {(p.numel() * p.element_size())/MiB_bytes:.3f} MB.")
+    
     if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES:
         return module
 
@@ -663,7 +667,7 @@ def make_layers(
     start_layer, end_layer = get_pp_indices(num_hidden_layers,
                                             get_pp_group().rank_in_group,
                                             get_pp_group().world_size)
-    logger.debug(f"In pp rank {get_pp_group().rank_in_group},  start_layer: {start_layer}, end_layer: {end_layer}, num_hidden_layers: {num_hidden_layers}")
+    # logger.debug(f"In pp rank {get_pp_group().rank_in_group},  start_layer: {start_layer}, end_layer: {end_layer}, num_hidden_layers: {num_hidden_layers}")
     # based on CPU size
     modules = torch.nn.ModuleList(
         [PPMissingLayer() for _ in range(start_layer)] + [

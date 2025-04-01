@@ -640,6 +640,7 @@ class Scheduler:
                 if do_preempt:
                     preempted_mode = self._preempt(victim_seq_group,
                                                    blocks_to_swap_out)
+                    logger.debug(f"Preempted request {victim_seq_group.request_id} using ${preempted_mode} mode")
                     if preempted_mode == PreemptionMode.RECOMPUTE:
                         preempted.append(victim_seq_group)
                     else:

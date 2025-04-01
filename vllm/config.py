@@ -3049,6 +3049,7 @@ class VllmConfig:
                                             init=True)  # type: ignore
     
     collect_layer_fwd_time: bool = False
+    collect_attn_mlp_fwd_time: bool = False
     
     log_stats_interval: Optional[float] = None
     
@@ -3274,7 +3275,12 @@ class VllmConfig:
 
         if not self.instance_id:
             self.instance_id = random_uuid()[:5]
-            
+        
+        if self.collect_attn_mlp_fwd_time:
+            assert self.collect_layer_fwd_time, \
+                "collect_layer_fwd_time must be True to collect_attn_mlp_fwd_time"
+        
+        print(f"log_stats_interval={self.log_stats_interval}")    
         if self.log_stats_interval is not None:
            assert self.log_stats_interval > 0, "log_stats_interval must be positive" 
 

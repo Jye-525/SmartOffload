@@ -142,6 +142,9 @@ GB_bytes = 1_000_000_000
 GiB_bytes = 1 << 30
 """The number of bytes in one gibibyte (GiB)."""
 
+MiB_bytes = 1 << 20
+"""The number of bytes in one mebibyte (MiB)."""
+
 STR_DTYPE_TO_TORCH_DTYPE = {
     "half": torch.half,
     "bfloat16": torch.bfloat16,

@@ -1114,12 +1114,12 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
 
     @nvtx_range("GPUModelRunnerBase.load_model")
     def load_model(self) -> None:
-        logger.info("Starting to load model %s...", self.model_config.model)
+        logger.info("PP Rank %d TP Rank %d Starting to load model %s...", get_pp_group().rank_in_group, get_tensor_model_parallel_rank(), self.model_config.model)
         with DeviceMemoryProfiler() as m:
             self.model = get_model(vllm_config=self.vllm_config)
 
         self.model_memory_usage = m.consumed_memory
-        logger.info("Loading model weights took %.4f GB",
+        logger.info("PP Rank %d TP Rank %d Loading model weights took %.4f GB", get_pp_group().rank_in_group, get_tensor_model_parallel_rank(),
                     self.model_memory_usage / float(2**30))
 
         if self.lora_config:

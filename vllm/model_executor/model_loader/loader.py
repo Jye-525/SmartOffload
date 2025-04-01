@@ -110,7 +110,6 @@ def _initialize_model(
     """Initialize a model with the given configurations."""
     model_config = vllm_config.model_config
     model_class, _ = get_model_architecture(model_config)
-    logger.debug(f"Initializing model {model_class} with prefix {prefix}")
 
     signatures = inspect.signature(model_class.__init__)
     all_params = [param.name for param in signatures.parameters.values()]
@@ -378,7 +377,6 @@ class DefaultModelLoader(BaseModelLoader):
             with target_device:
                 with nvtx_range("DefaultModelLoader._initialize_model"):
                     model = _initialize_model(vllm_config=vllm_config)
-                logger.debug(f"DefaultModelLoader finished initializing model.")
 
             weights_to_load = {name for name, _ in model.named_parameters()}
             with nvtx_range("DefaultModelLoader.load_weights"):
@@ -403,7 +401,7 @@ class DefaultModelLoader(BaseModelLoader):
                     # parameters onto device for processing and back off after.
                     with device_loading_context(module, target_device):
                         quant_method.process_weights_after_loading(module)
-        logger.debug(f"DefaultModelLoader finished loading model.")
+        # logger.debug(f"DefaultModelLoader finished loading model.")
         return model.eval()
 
 

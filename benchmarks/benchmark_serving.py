@@ -371,12 +371,13 @@ def sample_fixedlen_requests(
     tokenizer: PreTrainedTokenizerBase,
 ) -> List[Tuple[str, int, int]]:
     # offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
-    offset = np.random.randint(0, tokenizer.vocab_size)
+    # offset = np.random.randint(0, tokenizer.vocab_size)
+    offset = np.random.randint(0, tokenizer.vocab_size - 1)
     # get a prompt
     token_ids = [(offset + i) % tokenizer.vocab_size for i in range(input_len)]
     prompt = tokenizer.decode(token_ids)
     # Verify the prompt tokenizes back to the correct length
-    verified_token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+    verified_token_ids = tokenizer.encode(prompt)
     while len(verified_token_ids) != input_len:
         # Adjust by adding or removing tokens
         if len(verified_token_ids) > input_len:
@@ -390,7 +391,7 @@ def sample_fixedlen_requests(
             prompt = tokenizer.decode(token_ids + extra_tokens)
         
         # Re-verify
-        verified_token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+        verified_token_ids = tokenizer.encode(prompt)
         
      
     input_requests = []
@@ -581,7 +582,7 @@ async def benchmark(
     print("Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = (
         input_requests[0])
-    test_output_len = 5 # For testing purposes, we set the output length to 5
+    test_output_len = 5 if test_output_len >= 5 else test_output_len # For testing purposes, we set the output length to 5
     if backend != "openai-chat" and test_mm_content is not None:
         # multi-modal benchmark is only available on OpenAI Chat backend.
         raise ValueError(

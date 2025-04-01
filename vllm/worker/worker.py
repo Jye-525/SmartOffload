@@ -13,6 +13,7 @@ from vllm.distributed import (ensure_kv_transfer_initialized,
                               ensure_model_parallel_initialized,
                               init_distributed_environment,
                               set_custom_all_reduce)
+from vllm.distributed import get_pp_group, get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor import set_random_seed
@@ -265,7 +266,8 @@ class Worker(LocalOrDistributedWorkerBase):
                " the rest of the memory reserved for KV Cache is "
                f"{(available_kv_cache_memory / GiB_bytes):.2f}GiB."
                f"The engine can allocate {num_gpu_blocks} GPU blocks,"
-               f" {num_cpu_blocks} CPU blocks.")
+               f" {num_cpu_blocks} CPU blocks on PP Rank {get_pp_group().rank_in_group}"
+               f" TP Rank {get_tensor_model_parallel_rank()}.")
 
         logger.info(msg)
 

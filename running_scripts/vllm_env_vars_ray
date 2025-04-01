@@ -19,4 +19,3 @@ export TRITON_CACHE_DIR=/tmp/vllm_jye/triton_cache/
 export VLLM_CACHE_ROOT=/tmp/vllm_jye/vllm_cache/
 export TOKENIZERS_PARALLELISM=false
 export VLLM_LOGGING_LEVEL=DEBUG
-#export VLLM_TORCH_PROFILER_DIR=$HOME/vllm_traces/

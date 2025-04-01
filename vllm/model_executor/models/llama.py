@@ -29,7 +29,8 @@ from transformers import LlamaConfig
 from vllm.attention import Attention, AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.distributed import (get_pp_group, get_tensor_model_parallel_world_size, 
+                              get_tensor_model_parallel_rank, get_world_group)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm
@@ -283,11 +284,12 @@ class LlamaDecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
+              
         hidden_states = self.self_attn(positions=positions,
                                        hidden_states=hidden_states,
                                        kv_cache=kv_cache,
                                        attn_metadata=attn_metadata)
-
+        
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
@@ -311,7 +313,9 @@ class LlamaModel(nn.Module):
         lora_config = vllm_config.lora_config
         cpu_offload_config = cache_config.cpu_offload_config
 
-        self.collect_layer_fwd_time = vllm_config.collect_layer_fwd_time
+        self.timing_layer_fwd = vllm_config.collect_layer_fwd_time
+        # self.timing_attn_mlp = vllm_config.collect_attn_mlp_fwd_time
+        
         self.config = config
         self.cache_config = cache_config
         self.quant_config = quant_config
@@ -354,6 +358,9 @@ class LlamaModel(nn.Module):
                 prefix=f"{prefix}.layers",
                 offload_fn=self.offload_buffer.create_module,
             )
+        logger.info(f"PP Rank {get_pp_group().rank_in_group}/{get_pp_group().ranks} "
+                    f"TP Rank {get_tensor_model_parallel_rank()} include {len(self.layers)} layers,"
+                    f" start layer: {self.start_layer} end layer: {self.end_layer} ")
             
         if get_pp_group().is_last_rank:
             self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -363,7 +370,11 @@ class LlamaModel(nn.Module):
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
+        
+        self.init_cpu_time = 0
+        self.init_cuda_event = torch.cuda.Event(enable_timing=True)
         self.fwd_counts = 0
+        
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -378,37 +389,42 @@ class LlamaModel(nn.Module):
         intermediate_tensors: Optional[IntermediateTensors],
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        if self.collect_layer_fwd_time:
-            start_event_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
-            end_event_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
-            start_event_list[0].record()
+        if self.timing_layer_fwd and self.fwd_counts > 0:
+            # skip the first fwd_counts since it is the profiling run
+            layer_start_events = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
+            layer_end_events = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
         
         if get_pp_group().is_first_rank:
             # print the timestamp of the first rank (GPU time)
-            logger.info(f"[ unit:ns {time.time_ns()} ] PP Rank {get_pp_group().rank}/{get_pp_group().ranks} start forward on the model, fwd_counts: {self.fwd_counts} input_ids.shape: {input_ids.shape[0]}")
-            # start_rank_record = torch.cuda.Event(enable_timing=True)
-            # record_event.record()
+            cur_timestamp = time.time_ns()
+            relative_cpu_start_time = cur_timestamp - self.init_cpu_time
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
             else:
                 hidden_states = self.get_input_embeddings(input_ids)
             residual = None
             
+            if self.timing_layer_fwd and self.fwd_counts > 0: 
+                logger.info(f"[abs_timestamp(ns): {cur_timestamp}] [relative_start(ns): {relative_cpu_start_time:.3f}]"
+                            f" PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} start forward on the model, fwd_counts: {self.fwd_counts} input_ids_shape: {hidden_states.shape[0]}"
+                            f" num_prefill_reqs: {attn_metadata.num_prefills} num_decode_reqs: {attn_metadata.num_decode_tokens}")
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
         
-         
+        input_tokens = hidden_states.shape[0] 
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
-            if self.collect_layer_fwd_time and i != self.start_layer:
-                start_event_list[i - self.start_layer].record()
+            if self.timing_layer_fwd and self.fwd_counts > 0:
+                # record the beginning of the layer forward
+                layer_start_events[i - self.start_layer].record()
             hidden_states, residual = layer(positions, hidden_states,
                                             kv_caches[i - self.start_layer],
                                             attn_metadata, residual)
-            if self.collect_layer_fwd_time and i != self.end_layer - 1:
-                end_event_list[i - self.start_layer].record()
+            if self.timing_layer_fwd and self.fwd_counts > 0:
+                # record the end of the layer forward
+                layer_end_events[i - self.start_layer].record()
             if self.offload_buffer is not None and i in self.offload_buffer.initial_offload_layers:
                 # record the the computation event for this layer
                 self.offload_buffer.compute_event.record()
@@ -420,19 +436,28 @@ class LlamaModel(nn.Module):
             })
         else:
             hidden_states, _ = self.norm(hidden_states, residual)
-        
+       
         # print the duration of each layer.
-        if self.collect_layer_fwd_time:
-            # record the computation event for the last layer
-            end_event_list[-1].record()    
+        if self.timing_layer_fwd and self.fwd_counts > 0:
+            layer_end_events[-1].synchronize() 
             for i in range(self.start_layer, self.end_layer):
-                end_event_list[i - self.start_layer].synchronize()
-                layer_fwd_time = start_event_list[i - self.start_layer].elapsed_time(end_event_list[i - self.start_layer])
-                logger.info(f"PP Rank {get_pp_group().rank}/{get_pp_group().ranks} Layer {i} elapsed time: {layer_fwd_time:.3f} ms, start_layer: {self.start_layer} end_layer: {self.end_layer} fwd_counts: {self.fwd_counts} input_ids.shape: {input_ids.shape[0]} ")
-            
-        if (get_pp_group().is_last_rank):
+                idx = i - self.start_layer
+                relative_start_time = self.init_cuda_event.elapsed_time(layer_start_events[idx])
+                relative_end_time = self.init_cuda_event.elapsed_time(layer_end_events[idx])
+                layer_fwd_time = layer_start_events[idx].elapsed_time(layer_end_events[idx])
+                logger.info(f"PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} "
+                            f"Layer {i} relative timing info, layer_relative_start: {relative_start_time:.3f} layer_relative_end: {relative_end_time:.3f} "
+                            f"layer_fwd_time: {layer_fwd_time:.3f} ms, " 
+                            f"fwd_counts: {self.fwd_counts} input_ids_shape: {input_tokens} "
+                            f"num_prefill_reqs: {attn_metadata.num_prefills} num_decode_reqs: {attn_metadata.num_decode_tokens}")
+        
+        if get_pp_group().is_last_rank and self.timing_layer_fwd and self.fwd_counts > 0:
+            cur_timestamp = time.time_ns()
+            relative_cpu_end_time = cur_timestamp - self.init_cpu_time
             # print the timestamp of the last rank (GPU time)  --> calculate the total time (lastrank - first ranjk, from log information)
-            logger.info(f"[ unit:ns {time.time_ns()} ] PP Rank {get_pp_group().rank}/{get_pp_group().ranks} stop forward on the model. fwd_counts: {self.fwd_counts} input_ids.shape: {input_ids.shape[0]} ")
+            logger.info(f"[abs_timestamp(ns): {cur_timestamp}] [relative_end(ns): {relative_cpu_end_time:.3f}]"
+                        f" PP Rank {get_pp_group().rank} TP Rank {get_tensor_model_parallel_rank()} stop forward on the model. fwd_counts: {self.fwd_counts} input_ids_shape: {input_tokens}"
+                        f" num_prefill_reqs: {attn_metadata.num_prefills} num_decode_reqs: {attn_metadata.num_decode_tokens}")
         
         self.fwd_counts += 1
         return hidden_states
@@ -509,6 +534,11 @@ class LlamaModel(nn.Module):
             for i in range(self.start_layer, self.end_layer):
                 self.layers[i] = self.offload_buffer.maybe_offload(self.layers[i], i, 
                                                                     self.start_layer, self.end_layer)
+                
+                
+    def record_init_timestamp(self):
+        self.init_cpu_time = time.time_ns()
+        self.init_cuda_event.record()
 
 
 class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
@@ -591,6 +621,17 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors)
+        
+        # Step 1: call torch.distribute.barrier() to synchronize all ranks
+        current_device = torch.cuda.current_device()
+        # torch.distributed.barrier(device_ids=[current_device])
+        torch.cuda.synchronize() # in case of some GPUs has unfinished tasks.
+        get_world_group().barrier()
+        # Step 2: call self.model to record the initial timestamp
+        self.model.record_init_timestamp()
+        logger.debug(f"PP Rank {get_pp_group().rank_in_group}/{get_pp_group().ranks} "
+                     f"TP Rank {get_tensor_model_parallel_rank()} "
+                     f"WORLD RANK {get_world_group().local_rank}/{get_world_group().rank} the gpu device is {current_device}")
 
     def _init_model(self, vllm_config: VllmConfig, prefix: str = ""):
         return LlamaModel(vllm_config=vllm_config, prefix=prefix)
