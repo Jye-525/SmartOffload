@@ -10,7 +10,7 @@ export RAY_TMPDIR=/tmp/vllm_jye/vllm_ray
 export VLLM_WORKER_MULTIPROC_METHOD=fork
 export OMP_NUM_THREADS=1
 export RAY_COLOR_PREFIX=0
-export RAY_DEDUP_LOGS=0 
+export RAY_DEDUP_LOGS=0 xxx
 
 # vLLM related variables
 export VLLM_HOST_IP=$HOST_IP
@@ -19,3 +19,5 @@ export TRITON_CACHE_DIR=/tmp/vllm_jye/triton_cache/
 export VLLM_CACHE_ROOT=/tmp/vllm_jye/vllm_cache/
 export TOKENIZERS_PARALLELISM=false
 export VLLM_LOGGING_LEVEL=DEBUG
+
+[ -d $VLLM_RPC_BASE_PATH ] || mkdir -p $VLLM_RPC_BASE_PATH

@@ -24,7 +24,7 @@ from vllm.multimodal import MultiModalDataDict
 from vllm.sampling_params import BeamSearchParams
 from vllm.transformers_utils.tokenizer import AnyTokenizer, get_lora_tokenizer
 from vllm.utils import FlexibleArgumentParser, merge_async_iterators
-from dataset import get_dataset
+from SmartOffload_polaris.benchmarks.dataset_for_offline_serving import get_dataset
 
 
 @dataclasses.dataclass

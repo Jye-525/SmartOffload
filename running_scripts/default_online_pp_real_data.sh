@@ -7,14 +7,14 @@ echo "Start running default_online_pp.sh ..."
 
 ################### Configurable Parameters to Change #####################
 # Default values
-DEFAULT_DATASET="longbench" # "longbench" or "longbench-v2" or "sharedgpt"
+DEFAULT_DATASET="longbench" # "longbench" or "sharedgpt"
 DEFAULT_DATASET_PATH="/lus/eagle/projects/RECUP/jye/datasets/"
 
 # Set defaults if not provided
 dataset_name=$DEFAULT_DATASET
 dataset_path=$DEFAULT_DATASET_PATH
 
-num_reqs=(1)
+num_reqs=(20)
 offload_type=0 # 0: no offloading, 1: smart_offload
 test_cases=("prompt_only") #  "prompt_only" "decode_only"  "prompt_decode"
 
@@ -33,10 +33,11 @@ USE_PROFILING=0
 max_model_len=32768
 gpu_memory_limit=0.8
 log_stats_interval=1 # in seconds
-try_nums=2
+
+try_nums=1
 
 model_name=$(echo $model | cut -d'/' -f2)
-LOG_PATH="${HOME}/moe_mix_precision/SC25_logs/logs_${model_name}_tp${TP}_pp${PP}"
+LOG_PATH="${HOME}/moe_mix_precision/SC25_logs_test/logs_${model_name}_tp${TP}_pp${PP}"
 
 [ -d $LOG_PATH ] || mkdir -p $LOG_PATH
 

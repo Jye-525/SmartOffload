@@ -1,0 +1,6 @@
+{
+    "Llama-3.1-405B": "meta-llama/Llama-3.1-405B",
+    "Llama-3.3-70B-Instruct": "meta-llama/Llama-3.3-70B-Instruct",
+    "goliath-120b": "alpindale/goliath-120b",
+    "deepseek-coder-33b-base": "deepseek-ai/deepseek-coder-33b-base"
+}

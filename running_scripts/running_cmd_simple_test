@@ -36,18 +36,28 @@ NSYS_LAUNCH_CHILDREN=1
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 nohup nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx  -o report.nsys-rep --trace-fork-before-exec=true --delay 10 --duration 1200 \
+
 vllm serve deepseek-ai/deepseek-coder-33b-base \
         --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ \
         --trust-remote-code \
         --enforce-eager \
         --distributed-executor-backend ray \
-        --tensor-parallel-size 1 \
-        --pipeline-parallel-size 4 \
-        --ray-workers-use-nsight \
+        --tensor-parallel-size 4 \
+        --pipeline-parallel-size 1 \
         --disable-log-requests \
         > vllm_nsys.log 2>&1 &
 
---ray-workers-use-nsight \
+
+python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_serving_new.py \
+        --backend vllm \
+        --model deepseek-ai/deepseek-coder-33b-base \
+        --dataset-name longbench-v2 \
+        --longbench-v2-max-output-len 1 \
+        --ignore-eos \
+        --num-prompts 10
+
+
+
 
 ## v0.7.2
 nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx  -o report.nsys-rep --trace-fork-before-exec=true --delay 10 --duration 1200 \
