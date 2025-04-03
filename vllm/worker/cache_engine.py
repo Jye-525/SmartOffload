@@ -86,13 +86,31 @@ class CacheEngine:
 
     def swap_in(self, src_to_dst: torch.Tensor) -> None:
         for i in range(self.num_attention_layers):
+            if secondary_gpu_cache.has_free():
+                secondary_gpu_cache.allocated[i] = torch.empty(size=gpu_cache[i], dtype=self.gpu_cache[i].dtype,
+                                                                device=self.device_config.device_type) 
+                secondary_gpu_cache.allocated[i].copy_(self.gpu_cache[i], non_blocking=True)
+            else:
+                self.attn_backend.swap_blocks(self.cpu_cache[i], self.gpu_cache[i],
+                                              src_to_dst)
+
             self.attn_backend.swap_blocks(self.cpu_cache[i], self.gpu_cache[i],
                                           src_to_dst)
 
     def swap_out(self, src_to_dst: torch.Tensor) -> None:
         for i in range(self.num_attention_layers):
-            self.attn_backend.swap_blocks(self.gpu_cache[i], self.cpu_cache[i],
-                                          src_to_dst)
+            if secondary_gpu_cache.allocated.get(i, None):
+                self.gpu_cache[i].copy_(secondary_gpu_cache.allocated[i])
+            else:
+                self.attn_backend.swap_blocks(self.gpu_cache[i], self.cpu_cache[i],
+                                            src_to_dst)
+            
+    def clearup_secondary_gpu_cache(self) -> None:
+        for i, t in secondary_gpu_cache.allocated.items():
+            if t is not None:
+                secondary_gpu_cache.allocated[i] = None
+                self.cpu_cache[i].copy_(t)
+        secondary_gpu_cache.clear()
 
     def copy(self, src_to_dsts: torch.Tensor) -> None:
         self.attn_backend.copy_blocks(self.gpu_cache, src_to_dsts)
