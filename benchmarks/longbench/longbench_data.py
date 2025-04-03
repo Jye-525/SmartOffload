@@ -30,7 +30,6 @@ def load_lb_datasets(cache_dir, tasks, random_seed=1234):
     # cur_script_path = os.path.abspath(__file__)
     # base_dir = os.path.dirname(cur_script_path)
     datasets=tasks
-    print(f"dataset: {dataset}")
     # datasets = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
     #                 "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
     #                 "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]

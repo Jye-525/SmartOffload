@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/opt/homebrew/bin/bash
 ### Note the bash version should be 4.0 or above
 PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
 
@@ -25,19 +25,19 @@ declare -A MODEL_CONFIG=(
 
 TESTA_CASES=("prompt-only") #  "prompt-only" "decode-only"  "prompt-decode"
 NUM_TRIES=2
-NUM_REQS=(10 50 100 200 500)
+NUM_REQS=(10)
 
 # Associative array declaration for different datasets
-SUBTASKS="a,b,c" # used for longbench
+SUBTASKS="hotpotqa,2wikimqa" # used for longbench
 declare -A DATASETS=(
-    ["longbench"]="--dataset-name longbench --dataset-path ${BASE_DATASET_PATH} --subtask \"${SUBTASKS}\""
+    ["longbench"]="--dataset-name longbench --dataset-path ${BASE_DATASET_PATH} --longbench-subtasks \"${SUBTASKS}\""
     ["gsm8k"]="--dataset-name gsm8k --dataset-path ${BASE_DATASET_PATH}"
     ["sharedgpt"]="--dataset-name sharedgpt --dataset-path ${BASE_DATASET_PATH}"
 )
 
 # Associative array declaration for synthetic datasets
-INPUT_LENS=(511 1023 4095 8191 16383 32767)
-OUT_LENS=(1 32 64 128 512) 
+INPUT_LENS=(8191)
+OUT_LENS=(1) 
 declare -A SYNT_DATASETS=(
     ["random"]="--dataset-name random --random-input-len __INPUT_LEN__ --random-output-len __OUT_LEN__ --random-range-ratio 1.0"
     ["fixed-len"]="--dataset-name fixed-len --fixed-input-len __INPUT_LEN__ --fixed-output-len __OUT_LEN__"
@@ -60,7 +60,7 @@ declare -A OFFLOAD_CONFIG=(
 )
 
 
-EXECUTOR_BACKEND="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
+EXECUTOR_BACKEND="mp" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
 #EXEC_MODE="eager" # "eager"
 LOG_STATS_INTER=1 # in seconds
 
@@ -126,7 +126,7 @@ check_vllm_server_start() {
             return 1
         fi
         # Check for the Uvicorn message
-        if grep -q "INFO:     Uvicorn running on http" "$log_file"; then
+        if grep -q "INFO:     Uvicorn running on http" "$server_log_file"; then
             echo "vLLM server started successfully!"
             return 0
         fi
@@ -145,20 +145,22 @@ stop_vllm_server() {
 ####################################### Run the client benchmark ##################################################
 Run_client_bench() {
     local dataset_type=$1
-    local num_req=$2
-    local client_log_file_name=$3
+    local client_log_file_name=$2
+    local num_req=$3
     local extra_params=$4
 
     if [ "$dataset_type" = "synthetic" ]; then
         dataset_config="${extra_params}"
     elif [ "$dataset_type" = "real" ]; then
         dataset_config="${DATASETS[$DATASET_NAME]}" 
-        if [ $decode_len -gt 0 ]; then
-        case "$DATASET_NAME" in
-            "longbench")   dataset_config+=" --longbench-output-len $decode_len" ;;
-            "gsm8k")       dataset_config+=" --gsm8k-output-len $decode_len" ;;
-            "sharedgpt")   dataset_config+=" --sharedgpt-output-len $decode_len" ;;
-        esac
+        gen_len=$extra_params 
+        if [ $gen_len -gt 0 ]; then
+            case "$DATASET_NAME" in
+                "longbench")   dataset_config+=" --longbench-output-len $gen_len" ;;
+                "gsm8k")       dataset_config+=" --gsm8k-output-len $gen_len" ;;
+                "sharedgpt")   dataset_config+=" --sharedgpt-output-len $gen_len" ;;
+            esac
+        fi
     fi
     
     client_cmd="python ${EXEC_PATH}/benchmark_serving.py \
@@ -166,7 +168,7 @@ Run_client_bench() {
                     --model $MODEL \
                     --ignore-eos \
                     --num-prompts $num_req \
-                    ${dataset_config} "\
+                    ${dataset_config} "
 
             
     eval "${client_cmd}" > "${client_log_file_name}" 2>&1
@@ -179,7 +181,7 @@ benchmark_with_real_dataset() {
     for num_req in ${NUM_REQS[@]}; do
         echo "Start running with num_req=${num_req} requests using dataset ${DATASET_NAME} ..."
         for try_idx in $(seq 1 $NUM_TRIES); do
-            if [ $decode_len -gt 0 ]; then
+            if [ $gen_len -gt 0 ]; then
                 SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_g${gen_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
                 CLIENT_LOG_FILE_NAME="${LOG_PATH}/client_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_g${gen_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
             else
@@ -222,7 +224,7 @@ benchmark_with_real_dataset() {
 
 benchmark_with_synthetic_dataset() {
     local test_case=$1
-    if [ "$test_case" = "prompt_only" ]; then
+    if [ "$test_case" = "prompt-only" ]; then
         OUT_LENS=(1) # decode length
     fi
 
@@ -233,8 +235,8 @@ benchmark_with_synthetic_dataset() {
                 # Replace placeholders with actual values
                 dataset_config="${SYNT_DATASETS[$DATASET_NAME]}"
                 dataset_config="${dataset_config//__INPUT_LEN__/$input_len}"
-                dataset_config="${dataset_config//__OUT_LEN__/$output_len}"
-                echo "Dataset: $dataset_type, Config: $config"
+                dataset_config="${dataset_config//__OUT_LEN__/$out_len}"
+                echo "Dataset: $DATASET_NAME, Config: $dataset_config"
 
                 for try_idx in $(seq 1 $NUM_TRIES); do
                     SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_p${input_len}_g${out_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
@@ -258,7 +260,7 @@ benchmark_with_synthetic_dataset() {
                     sleep 2
 
                     # Start the client benchmark
-                    Run_client_bench "synthetic" ${CLIENT_LOG_FILE_NAME} ${num_req} ${dataset_config} 
+                    Run_client_bench "synthetic" ${CLIENT_LOG_FILE_NAME} ${num_req} "${dataset_config}" 
                     sleep 2
 
                     # Stop the vLLM server
@@ -278,13 +280,18 @@ benchmark_with_synthetic_dataset() {
 
 
 if [ $OFFLOAD_TYPE -eq 0 ]; then
+    # gen_len=-1
     echo "Running without offloading ..."
     for test_case in "${TESTA_CASES[@]}"; do
-        if [ "$test_case" = "prompt_only" ]; then
+        if [ "$test_case" = "prompt-only" ]; then
             gen_len=1 # decode length
-        elif [ "$test_case" = "prompt_decode" ]; then
+        elif [ "$test_case" = "prompt-decode" ]; then
             gen_len=-1 # decode length, meaning that we did not override the decode length
+        else
+            echo "Invalid test case ${test_case}. Continue next..."
+            continue
         fi
+        echo "gen_len=" $gen_len
         case "$DATASET_NAME" in
             "longbench"|"gsm8k"|"sharedgpt")   benchmark_with_real_dataset $gen_len ;;
             "random"|"fixed-len")      benchmark_with_synthetic_dataset $test_case ;;
@@ -294,10 +301,13 @@ if [ $OFFLOAD_TYPE -eq 0 ]; then
 elif [ $OFFLOAD_TYPE -eq 1 ]; then
     echo "Running experiments with vllm naive offloading ..."
     for test_case in "${TESTA_CASES[@]}"; do
-        if [ "$test_case" = "prompt_only" ]; then
+        if [ "$test_case" = "prompt-only" ]; then
             gen_len=1 # decode length
-        elif [ "$test_case" = "prompt_decode" ]; then
+        elif [ "$test_case" = "prompt-decode" ]; then
             gen_len=-1 # decode length, meaning that we did not override the decode length
+        else
+            echo "Invalid test case ${test_case}. Continue next..."
+            continue
         fi
         case "$DATASET_NAME" in
             "longbench"|"gsm8k"|"sharedgpt")   benchmark_with_real_dataset $gen_len ;;
@@ -307,10 +317,13 @@ elif [ $OFFLOAD_TYPE -eq 1 ]; then
 elif [ $OFFLOAD_TYPE -eq 2 ]; then
     echo "Running experiments with our offloading approach ..."
     for test_case in "${TESTA_CASES[@]}"; do
-        if [ "$test_case" = "prompt_only" ]; then
+        if [ "$test_case" = "prompt-only" ]; then
             gen_len=1 # decode length
-        elif [ "$test_case" = "prompt_decode" ]; then
+        elif [ "$test_case" = "prompt-decode" ]; then
             gen_len=-1 # decode length, meaning that we did not override the decode length
+        else
+            echo "Invalid test case ${test_case}. Continue next..."
+            continue
         fi
         case "$DATASET_NAME" in
             "longbench"|"gsm8k"|"sharedgpt")   benchmark_with_real_dataset $gen_len ;;

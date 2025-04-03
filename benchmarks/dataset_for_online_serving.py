@@ -4,7 +4,7 @@ import json
 import numpy as np
 from typing import List, Tuple, Optional
 from transformers import PreTrainedTokenizerBase
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 from tqdm.asyncio import tqdm
 from longbench.longbench_data import load_lb_datasets, load_lb_v2_dataset
 
@@ -274,8 +274,10 @@ def sample_gsm8k_requests(
     max_output_len: Optional[int] = None,
 ) -> List[Tuple[str, int, int, None]]:
     # Load the dataset from huggingface datasets.
+    
     dataset = load_dataset("gsm8k", "main", cache_dir=dataset_path)
     
+    dataset = concatenate_datasets([dataset["train"], dataset["test"]]) 
     # shuffle the dataset
     dataset = dataset.shuffle(seed=random_seed)
      
