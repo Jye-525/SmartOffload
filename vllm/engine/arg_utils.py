@@ -94,6 +94,32 @@ def nullable_int_list(val: str) -> Optional[List[int]]:
             raise argparse.ArgumentTypeError(msg) from exc
     return out_lst
 
+def nullable_str_list(val: str) -> Optional[List[str]]:
+    """Parses a string containing comma separated values into a list. Each value is a str."""
+    if len(val) == 0:
+        return None
+    out_lst: List[str] = []
+    for item in val.split(","):
+        try:
+            out_lst.append(item)
+        except ValueError as exc:
+            msg = f"Failed to parse value {item}"
+            raise argparse.ArgumentTypeError(msg) from exc
+    return out_lst
+
+def str_list(val: str) -> List[str]:
+    """Parses a string containing comma separated values into a list. Each value is a str."""
+    if len(val) == 0:
+        raise argparse.ArgumentTypeError("Empty string is not allowed")
+    out_lst: List[str] = []
+    for item in val.split(","):
+        try:
+            out_lst.append(item)
+        except ValueError as exc:
+            msg = f"Failed to parse value {item}"
+            raise argparse.ArgumentTypeError(msg) from exc
+    return out_lst
+
 @dataclass
 class EngineArgs:
     """Arguments for vLLM engine."""

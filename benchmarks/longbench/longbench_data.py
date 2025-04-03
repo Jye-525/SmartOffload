@@ -26,13 +26,14 @@ def get_lb_dataset2maxgenlen():
     dataset2maxgenlen = json.load(open(f"{base_dir}/config/dataset2maxlen.json", "r"))
     return dataset2maxgenlen
 
-def load_lb_datasets(cache_dir, random_seed=1234):
-    cur_script_path = os.path.abspath(__file__)
-    base_dir = os.path.dirname(cur_script_path)
-    
-    datasets = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
-                    "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
-                    "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
+def load_lb_datasets(cache_dir, tasks, random_seed=1234):
+    # cur_script_path = os.path.abspath(__file__)
+    # base_dir = os.path.dirname(cur_script_path)
+    datasets=tasks
+    print(f"dataset: {dataset}")
+    # datasets = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
+    #                 "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
+    #                 "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
     
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
     dataset2prompt = get_lb_dataset2prompt()

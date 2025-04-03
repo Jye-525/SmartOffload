@@ -157,6 +157,7 @@ def sample_longbench_v2_requests(
 
 def sample_longbench_requests(
     dataset_path: str,
+    subtasks: List[str],
     num_requests: int,
     max_input_len: int,
     max_output_len: Optional[int],
@@ -164,7 +165,7 @@ def sample_longbench_requests(
     random_seed: int = 1234
 ) -> List[Tuple[str, int, int, None]]:
     # Load all the longbench dataset 
-    longbench_dataset = load_lb_datasets(random_seed=random_seed, cache_dir=dataset_path)
+    longbench_dataset = load_lb_datasets(random_seed=random_seed, tasks=subtasks, cache_dir=dataset_path)
     # filter the required number of request from the dataset
     filtered_dataset = []
     for json_object in tqdm(longbench_dataset):
@@ -263,3 +264,34 @@ def sample_fixedlen_requests(
                                int(output_len), None))
 
     return input_requests
+
+
+def sample_gsm8k_requests(
+    dataset_path: str,
+    num_requests: int,
+    tokenizer: PreTrainedTokenizerBase,
+    random_seed: int,
+    max_output_len: Optional[int] = None,
+) -> List[Tuple[str, int, int, None]]:
+    # Load the dataset from huggingface datasets.
+    dataset = load_dataset("gsm8k", "main", cache_dir=dataset_path)
+    
+    # shuffle the dataset
+    dataset = dataset.shuffle(seed=random_seed)
+     
+    # Filter out sequences that are too long or too short
+    filtered_dataset: List[Tuple[str, int, int]] = []
+    for i in range(len(dataset)):
+        if len(filtered_dataset) == num_requests:
+            break
+
+        # Tokenize the prompts and completions.
+        prompt = f"Solve: {dataset[i]['question']}\nAnswer:"
+        prompt_token_ids = tokenizer(prompt).input_ids
+        output_len = dataset[i]['answer']
+        output_token_ids = tokenizer(output_len).input_ids
+        prompt_len = len(prompt_token_ids)
+        output_len = len(output_token_ids) if max_output_len is None else max_output_len
+        filtered_dataset.append((prompt, prompt_len, output_len, None))
+
+    return filtered_dataset
