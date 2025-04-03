@@ -63,6 +63,7 @@ declare -A OFFLOAD_CONFIG=(
 EXECUTOR_BACKEND="mp" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
 #EXEC_MODE="eager" # "eager"
 LOG_STATS_INTER=1 # in seconds
+PREEMPTION_MODE="swap" # "recompute" or "swap"
 
 MODEL_NAME=$(echo $MODEL | cut -d'/' -f2)
 LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}"
@@ -102,6 +103,7 @@ start_vllm_server() {
         --max-model-len ${MAX_MODEL_LEN} \
         --gpu-memory-utilization ${GPU_MEM_LIMIT} \
         --log-stats-interval ${LOG_STATS_INTER} \
+        --preemption-mode ${PREEMPTION_MODE} \
         --collect-layer-fwd-time "
 
     if [ $OFFLOAD_TYPE -ne 0 ]; then
