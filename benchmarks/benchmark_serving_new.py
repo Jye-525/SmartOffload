@@ -903,7 +903,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "sonnet", "random", "fixed-len", "hf", 'longbench', 'longbench-v2'],
+        choices=["sharegpt", "sonnet", "random", "fixed-len", "hf", 'longbench', 'longbench-v2', 'gsm8k'],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument("--dataset-path",

@@ -24,7 +24,9 @@ class SecondaryGpuCache:
         
     def can_allocate(self, layer_id: int, kv_cache_shape: Tuple[int, ...]) -> bool:
         # check if the current device has enough space to allocate the required space
-        t_start = time.time_ns()
+        logger.debug(f"+++++++++Layer {layer_id} kv_cache_shape: {kv_cache_shape}")
+        logger.debug(f"++++++++++Layer {layer_id} elem_num: {math.prod(kv_cache_shape)}")
+        logger.debug(f"++++++++++Layer {layer_id} dtype: {self._dtype}")
         required_kv_cache_size = math.prod(kv_cache_shape) * get_dtype_size(self._dtype)
         t_end_1 = time.time_ns()
         # Step 1: get the free memory in the current device

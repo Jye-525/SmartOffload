@@ -2,8 +2,8 @@
 ## SO we need to copy ray to my virtural environment, and change its python to my python
 #cp /soft/applications/conda/2024-10-30-workshop/mconda3/bin/ray /home/jieye/venvs/vllm_moe/bin/
 
-MACHINE=$1
-IF_NAME=$(if [[ $MACHINE == "polaris" ]]; then echo "hsn0"; else echo "bond0.2245"; fi)
+# IF_NAME=hsn0
+IF_NAME=ib0
 export HOST_IP=`ip -4 addr show $IF_NAME | grep -oP '(?<=inet\s)\d+(\.\d+){3}'`
 
 # ray related env variables

@@ -1,9 +1,8 @@
-#!/bin/bash
+#!/opt/homebrew/bin/bash
 ### Note the bash version should be 4.0 or above
-# PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
-PROJ_PATH="$HOME/dl-io/SmartOffload/running_scripts/"
+PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
 
-source $PROJ_PATH/vllm_env_vars_ray sophia
+source $PROJ_PATH/vllm_env_vars_ray
 
 echo "Start running default_online_pp.sh ..."
 
@@ -11,47 +10,41 @@ PYTHON_PATH=`which python`
 echo "The current python executable path is $PYTHON_PATH"
 ################### Configurable Parameters to Change #####################
 EXEC_PATH="$PROJ_PATH/../benchmarks/"
-# MODEL_PATH="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
-MODEL_PATH="/vast/users/amaurya/huggingface/"
-# BASE_DATASET_PATH="/lus/eagle/projects/RECUP/jye/datasets/"
-BASE_DATASET_PATH="/vast/users/amaurya/huggingface/"
-# LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_logs/"
-LOG_BASE_PATH="${HOME}/dl-io/SC25_logs/"
+MODEL_PATH="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
+BASE_DATASET_PATH="/lus/eagle/projects/RECUP/jye/datasets/"
+LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_logs/"
 
 # Model configurations
 declare -A MODEL_CONFIG=(
     # Format: "TP PP MAX_MODEL_LEN GPU_MEMORY_LIMIT"
-    ["deepseek-ai/deepseek-coder-33b-base"]="2 1 32768 0.55"
-    ["meta-llama/Llama-3.3-70B-Instruct"]="2 1 32768 0.8"
+    ["deepseek-ai/deepseek-coder-33b-base"]="4 1 32768 0.8"
+    ["meta-llama/Llama-3.3-70B-Instruct"]="4 2 32768 0.8"
     ["alpindale/goliath-120b"]="4 4 4096 0.8"
     ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.8"
-    ["deepseek-ai/deepseek-llm-7b-base"]="1 1 4096 0.8"
 )
 
-TESTA_CASES=("prompt-decode") #  "prompt-only" "decode-only"  "prompt-decode"
-NUM_TRIES=1
-NUM_REQS=(1)
+TESTA_CASES=("prompt-only") #  "prompt-only" "decode-only"  "prompt-decode"
+NUM_TRIES=2
+NUM_REQS=(10)
 
 # Associative array declaration for different datasets
-SUBTASKS="narrativeqa,hotpotqa" # used for longbench
+SUBTASKS="hotpotqa,2wikimqa" # used for longbench
 declare -A DATASETS=(
-    ["longbench"]="--dataset-name longbench --dataset-path ${BASE_DATASET_PATH} --longbench-subtask \"${SUBTASKS}\""
+    ["longbench"]="--dataset-name longbench --dataset-path ${BASE_DATASET_PATH} --longbench-subtasks \"${SUBTASKS}\""
     ["gsm8k"]="--dataset-name gsm8k --dataset-path ${BASE_DATASET_PATH}"
     ["sharedgpt"]="--dataset-name sharedgpt --dataset-path ${BASE_DATASET_PATH}"
 )
 
 # Associative array declaration for synthetic datasets
-INPUT_LENS=(1024)
-OUT_LENS=(1024) 
+INPUT_LENS=(8191)
+OUT_LENS=(1) 
 declare -A SYNT_DATASETS=(
     ["random"]="--dataset-name random --random-input-len __INPUT_LEN__ --random-output-len __OUT_LEN__ --random-range-ratio 1.0"
     ["fixed-len"]="--dataset-name fixed-len --fixed-input-len __INPUT_LEN__ --fixed-output-len __OUT_LEN__"
 )
 
-DATASET_NAME="fixed-len"
-# DATASET_NAME="gsm8k"
-# MODEL="deepseek-ai/deepseek-coder-33b-base"
-MODEL="deepseek-ai/deepseek-llm-7b-base"
+DATASET_NAME="longbench"
+MODEL="deepseek-ai/deepseek-coder-33b-base"
 # Model="meta-llama/Llama-3.3-70B-Instruct"
 # Model="alpindale/goliath-120b"
 # Model="meta-llama/Llama-3.1-405B"
@@ -123,7 +116,7 @@ start_vllm_server() {
 check_vllm_server_start() {
     server_log_file=$1
     sleep_inter=5
-    total_wait_time=180
+    total_wait_time=600
     
     sleep $sleep_inter
     echo "Start checking if the vLLM server started successfully..."
@@ -145,11 +138,9 @@ check_vllm_server_start() {
 }
 
 stop_vllm_server() {
-    # killall -9 /home/jieye/venvs/vllm_moe/bin/python
-    killall -9 /home/amaurya/softwares/miniconda3/envs/vllm_env/bin/python 
+    killall -9 /home/jieye/venvs/vllm_moe/bin/python
     sleep 5
-    # killall -9 /home/jieye/venvs/vllm_moe/bin/python 
-    killall -9 /home/amaurya/softwares/miniconda3/envs/vllm_env/bin/python
+    killall -9 /home/jieye/venvs/vllm_moe/bin/python 
     echo "VLLM server stopped ..."
 }
 
@@ -164,7 +155,7 @@ Run_client_bench() {
         dataset_config="${extra_params}"
     elif [ "$dataset_type" = "real" ]; then
         dataset_config="${DATASETS[$DATASET_NAME]}" 
-        gen_len=${extra_params}
+        gen_len=$extra_params 
         if [ $gen_len -gt 0 ]; then
             case "$DATASET_NAME" in
                 "longbench")   dataset_config+=" --longbench-output-len $gen_len" ;;
@@ -174,18 +165,16 @@ Run_client_bench() {
         fi
     fi
     
-    client_cmd="python ${EXEC_PATH}/benchmark_serving_new.py \
+    client_cmd="python ${EXEC_PATH}/benchmark_serving.py \
                     --backend vllm \
                     --model $MODEL \
                     --ignore-eos \
                     --num-prompts $num_req \
                     ${dataset_config} "
 
-    echo "Running client benchmark with command: $client_cmd"        
-    
+            
     eval "${client_cmd}" > "${client_log_file_name}" 2>&1
-    # sleep 180 # give the server some time to finish the requests
-    sleep 60
+    sleep 180 # give the server some time to finish the requests
 }
 
 ################################################## Run the Client Test ##########################################################
@@ -293,6 +282,7 @@ benchmark_with_synthetic_dataset() {
 
 
 if [ $OFFLOAD_TYPE -eq 0 ]; then
+    # gen_len=-1
     echo "Running without offloading ..."
     for test_case in "${TESTA_CASES[@]}"; do
         if [ "$test_case" = "prompt-only" ]; then
@@ -300,9 +290,10 @@ if [ $OFFLOAD_TYPE -eq 0 ]; then
         elif [ "$test_case" = "prompt-decode" ]; then
             gen_len=-1 # decode length, meaning that we did not override the decode length
         else
-            echo "Invalid test case: $test_case. Continue..."
+            echo "Invalid test case ${test_case}. Continue next..."
             continue
         fi
+        echo "gen_len=" $gen_len
         case "$DATASET_NAME" in
             "longbench"|"gsm8k"|"sharedgpt")   benchmark_with_real_dataset $gen_len ;;
             "random"|"fixed-len")      benchmark_with_synthetic_dataset $test_case ;;
@@ -317,8 +308,8 @@ elif [ $OFFLOAD_TYPE -eq 1 ]; then
         elif [ "$test_case" = "prompt-decode" ]; then
             gen_len=-1 # decode length, meaning that we did not override the decode length
         else
-            echo "Invalid test case: $test_case. Continue..."
-            continue    
+            echo "Invalid test case ${test_case}. Continue next..."
+            continue
         fi
         case "$DATASET_NAME" in
             "longbench"|"gsm8k"|"sharedgpt")   benchmark_with_real_dataset $gen_len ;;
@@ -333,7 +324,7 @@ elif [ $OFFLOAD_TYPE -eq 2 ]; then
         elif [ "$test_case" = "prompt-decode" ]; then
             gen_len=-1 # decode length, meaning that we did not override the decode length
         else
-            echo "Invalid test case: $test_case. Continue..."
+            echo "Invalid test case ${test_case}. Continue next..."
             continue
         fi
         case "$DATASET_NAME" in

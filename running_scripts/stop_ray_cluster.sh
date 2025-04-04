@@ -1,9 +1,11 @@
 #!/bin/bash
-PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
+# PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
+PROJ_PATH="$HOME/dl-io/SmartOffload/running_scripts/"
 #PROJ_PATH="$HOME/moe_benchmark/SmartOffload/running_scripts/"
 # Get ray head node
 HEAD_NODE=`cat $PBS_NODEFILE|head -n 1`
-NODE_IFACE="hsn0" # for sophia, use 'bond0.2245'; for polaris use 'hsn0'
+# NODE_IFACE="hsn0" # for sophia, use 'bond0.2245'; for polaris use 'hsn0'
+NODE_IFACE="ib0" # for sophia, use 'bond0.2245'; for polaris use 'hsn0'
 HEAD_NODE_IP=`ip -4 addr show $NODE_IFACE | grep -oP '(?<=inet\s)\d+(\.\d+){3}'`
 WORKER_NODES=`cat $PBS_NODEFILE|tail -n +2`
 
