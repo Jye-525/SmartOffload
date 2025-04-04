@@ -310,6 +310,9 @@ class LlamaModel(nn.Module):
         quant_config = vllm_config.quant_config
         lora_config = vllm_config.lora_config
         cpu_offload_config = cache_config.cpu_offload_config
+        self.smart_offload = False
+        self.smart_offload_per_block_time = 0.001 # assume 1 milliseconds
+        self.smart_offload_pci_bandwidth = 23 # GB/s
 
         self.collect_layer_fwd_time = vllm_config.collect_layer_fwd_time
         self.config = config
@@ -342,6 +345,7 @@ class LlamaModel(nn.Module):
                 prefix=f"{prefix}.layers",
             )
         else:
+            self.smart_offload = True
             # create offload buffer
             self.offload_buffer = OffloadBuffer(cpu_offload_config.cpu_offload_layers,
                                                 cpu_offload_config.param_offload_target)
@@ -354,7 +358,7 @@ class LlamaModel(nn.Module):
                 prefix=f"{prefix}.layers",
                 offload_fn=self.offload_buffer.create_module,
             )
-            
+        self.smart_offload_per_block_size = self.get_block_size() /(1024*1024*1024) # GB
         if get_pp_group().is_last_rank:
             self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
@@ -364,6 +368,18 @@ class LlamaModel(nn.Module):
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
         self.fwd_counts = 0
+
+    def get_block_size(self) -> int:
+        module = self.layers[self.start_layer]
+        total_size = 0
+
+        for param in module.parameters():
+            total_size += param.numel() * param.element_size()
+
+        for buffer in module.buffers():
+            total_size += buffer.numel() * buffer.element_size()
+
+        return total_size
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -382,6 +398,13 @@ class LlamaModel(nn.Module):
             start_event_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
             end_event_list = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
             start_event_list[0].record()
+        
+        if self.smart_offload:
+            self.smart_offload_per_block_time = self.smart_offload_per_block_time * 2 # assume that every consecutive forward pass takes 2x more time (2x more input prompts)
+            k = (self.smart_offload_per_block_size/self.smart_offload_pci_bandwidth) / self.smart_offload_per_block_time 
+            print(f"smart_offload_per_block_size: {self.smart_offload_per_block_size} smart_offload_pci_bandwidth: {self.smart_offload_pci_bandwidth} smart_offload_per_block_time: {self.smart_offload_per_block_time} k: {k}")
+            k = int(max(1, k))
+            self.offload_buffer.reorganize_resident_gpu_modules(k)
         
         if get_pp_group().is_first_rank:
             # print the timestamp of the first rank (GPU time)
