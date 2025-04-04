@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import (TYPE_CHECKING, Callable, ClassVar, Deque, Dict, Iterable,
-                    List, Mapping, NamedTuple, Optional)
+                    List, Mapping, NamedTuple, Optional, Tuple)
 from typing import Sequence as GenericSequence
 from typing import Set, Type, Union, cast, overload
 
@@ -1322,6 +1322,11 @@ class LLMEngine:
             (seq_group_metadata_list, scheduler_outputs,
              allow_async_output_proc
              ) = self.scheduler[virtual_engine].schedule()
+            
+            avg_gpu_kv_cache_usage, avg_cpu_kv_cache_usage = self.get_avg_kv_cache_usage()
+            logger.debug(f"Avg KV cache usage of all schedulers during the this forward iteration. "
+                         f"Scheduler id: {virtual_engine} scheduled {len(seq_group_metadata_list)} requests, "
+                         f"GPU KV cache usage: {avg_gpu_kv_cache_usage * 100:.1f}%, CPU KV cache usage: {avg_cpu_kv_cache_usage * 100:.1f}%")
 
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
@@ -1802,6 +1807,26 @@ class LLMEngine:
             max_lora=str(max_lora_stat),
             waiting_lora_adapters=list(waiting_lora_adapters.keys()),
             running_lora_adapters=list(running_lora_adapters.keys()))
+        
+    def get_avg_kv_cache_usage(self) -> Tuple[float, float]:
+        # KV Cache Usage in %
+        num_total_gpu = self.cache_config.num_gpu_blocks
+        gpu_cache_usage_sys = 0.
+        if num_total_gpu:  # Guard against both None and 0
+            num_free_gpu = sum(
+                scheduler.block_manager.get_num_free_gpu_blocks()
+                for scheduler in self.scheduler)
+            gpu_cache_usage_sys = 1.0 - (num_free_gpu / num_total_gpu)
+
+        num_total_cpu = self.cache_config.num_cpu_blocks
+        cpu_cache_usage_sys = 0.
+        if num_total_cpu:  # Guard against both None and 0
+            num_free_cpu = sum(
+                scheduler.block_manager.get_num_free_cpu_blocks()
+                for scheduler in self.scheduler)
+            cpu_cache_usage_sys = 1.0 - (num_free_cpu / num_total_cpu)
+        
+        return gpu_cache_usage_sys, cpu_cache_usage_sys
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_executor.add_lora(lora_request)

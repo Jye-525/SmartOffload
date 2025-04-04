@@ -106,3 +106,33 @@ python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_s
         --random-range-ratio 1.0 \
         --ignore-eos \
         --num-prompts 10
+
+function start_gpu_monitor() {
+    echo "Monitoring starting......"
+    # start gpu monitor & host memory monitor
+    for gpu_id in $(seq 0 $((NRANKS_PER_NODE - 1))); 
+    do
+        setsid python ${SRC_DIR}/monitor_gpu.py $gpu_id "${OUTPUT_DIR}/${LOG_STR}-monitor-${gpu_id}.csv" &
+        monitor_pid[$gpu_id]=$!
+        echo "Monitoring started for GPU $gpu_id at PID ${monitor_pid[$gpu_id]}."
+    done
+    setsid python ${SRC_DIR}/monitor_host_mem.py "${OUTPUT_DIR}/${LOG_STR}-monitor-vmem.csv" &
+}
+
+function stop_gpu_monitor() {
+    echo "Monitoring stopping......"
+    # Terminate monitoring for all GPUs and host memory
+    for gpu_id in $(seq 0 $((NRANKS_PER_NODE - 1))); 
+    do
+        echo "Killing the monitoring script for GPU $gpu_id at PID ${monitor_pid[$gpu_id]}."
+        kill -2 ${monitor_pid[$gpu_id]}
+        echo "SIGTERM (kill -2) instructed to monitoring script for GPU $gpu_id."
+        wait ${monitor_pid[$gpu_id]}
+        echo "Killed the monitoring script for GPU $gpu_id."
+    done
+
+    kill -2 $(pgrep -f monitor_host_mem.py)
+    echo "SIGTERM (kill -2) instructed to monitoring script for host memory."
+    wait $(pgrep -f monitor_host_mem.py)
+    echo "Killed the monitoring script for host memory."
+}

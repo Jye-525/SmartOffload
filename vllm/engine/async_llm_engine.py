@@ -299,7 +299,12 @@ class _AsyncLLMEngine(LLMEngine):
              allow_async_output_proc
              ) = self.scheduler[virtual_engine].schedule()
 
-            # logger.info(f"Scheduler with virtual engine {virtual_engine} scheduled {len(seq_group_metadata_list)} requests to perform inference.")
+            # Recoder the KV cache utilization for the current iteration
+            avg_gpu_kv_cache_usage, avg_cpu_kv_cache_usage = self.get_avg_kv_cache_usage()
+            logger.debug(f"Avg KV cache usage of all schedulers during the this forward iteration. "
+                         f"Scheduler id: {virtual_engine} scheduled {len(seq_group_metadata_list)} requests, "
+                         f"GPU KV cache usage: {avg_gpu_kv_cache_usage * 100:.1f}%, CPU KV cache usage: {avg_cpu_kv_cache_usage * 100:.1f}%")
+            
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
 

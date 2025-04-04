@@ -1,10 +1,10 @@
-#!/opt/homebrew/bin/bash
+#!/bin/bash
 ### Note the bash version should be 4.0 or above
 PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
 
 source $PROJ_PATH/vllm_env_vars_ray
 
-echo "Start running default_online_pp.sh ..."
+echo "Start running default_online_real.sh ..."
 
 PYTHON_PATH=`which python`
 echo "The current python executable path is $PYTHON_PATH"
@@ -12,23 +12,23 @@ echo "The current python executable path is $PYTHON_PATH"
 EXEC_PATH="$PROJ_PATH/../benchmarks/"
 MODEL_PATH="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
 BASE_DATASET_PATH="/lus/eagle/projects/RECUP/jye/datasets/"
-LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_logs/"
+LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_logs_baseline/"
 
 # Model configurations
 declare -A MODEL_CONFIG=(
     # Format: "TP PP MAX_MODEL_LEN GPU_MEMORY_LIMIT"
-    ["deepseek-ai/deepseek-coder-33b-base"]="4 1 32768 0.8"
-    ["meta-llama/Llama-3.3-70B-Instruct"]="4 2 32768 0.8"
-    ["alpindale/goliath-120b"]="4 4 4096 0.8"
-    ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.8"
+    ["deepseek-ai/deepseek-coder-33b-base"]="4 1 32768 0.9"
+    ["meta-llama/Llama-3.3-70B-Instruct"]="4 2 32768 0.9"
+    ["alpindale/goliath-120b"]="4 4 4096 0.9"
+    ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.9"
 )
 
 TESTA_CASES=("prompt-only") #  "prompt-only" "decode-only"  "prompt-decode"
-NUM_TRIES=2
-NUM_REQS=(10)
+NUM_TRIES=1
+NUM_REQS=(10 50 150 200)
 
 # Associative array declaration for different datasets
-SUBTASKS="hotpotqa,2wikimqa" # used for longbench
+SUBTASKS="hotpotqa" # used for longbench
 declare -A DATASETS=(
     ["longbench"]="--dataset-name longbench --dataset-path ${BASE_DATASET_PATH} --longbench-subtasks \"${SUBTASKS}\""
     ["gsm8k"]="--dataset-name gsm8k --dataset-path ${BASE_DATASET_PATH}"
@@ -44,10 +44,10 @@ declare -A SYNT_DATASETS=(
 )
 
 DATASET_NAME="longbench"
-MODEL="deepseek-ai/deepseek-coder-33b-base"
+# MODEL="deepseek-ai/deepseek-coder-33b-base"
 # Model="meta-llama/Llama-3.3-70B-Instruct"
 # Model="alpindale/goliath-120b"
-# Model="meta-llama/Llama-3.1-405B"
+Model="meta-llama/Llama-3.1-405B"
 IFS=' ' read -r TP PP MAX_MODEL_LEN GPU_MEM_LIMIT <<< "${MODEL_CONFIG[$MODEL]}"
 
 OFFLOAD_TYPE=0 # 0 no offloading, 1: vllm naive offloading, 2: smart_offload
@@ -60,16 +60,24 @@ declare -A OFFLOAD_CONFIG=(
 )
 
 
-EXECUTOR_BACKEND="mp" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
+EXECUTOR_BACKEND="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
 #EXEC_MODE="eager" # "eager"
 LOG_STATS_INTER=1 # in seconds
+PREEMP_MODE="recompute" # "recompute" or "swap"
 
 MODEL_NAME=$(echo $MODEL | cut -d'/' -f2)
-LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}"
+LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}/"
+SUB_PATH="${DATASET_NAME}"
+if [ ${DATASET_NAME} = "longbench" ]; then
+    SUB_PATH="${SUB_PATH}--${SUBTASKS//,/--}"
+fi
+LOG_PATH="${LOG_PATH}/${SUB_PATH}/"
 [ -d $LOG_PATH ] || mkdir -p $LOG_PATH
 
 ###################################### Related Helper functions #############################################
 ###################################### Start and Stop Ray Clsuter ###########################################
+clean_ray_dir
+
 start_ray_cluster() {
     RAY_SCRIPT="$PROJ_PATH/start_ray_cluster.sh"
     eval "$RAY_SCRIPT"
@@ -102,6 +110,7 @@ start_vllm_server() {
         --max-model-len ${MAX_MODEL_LEN} \
         --gpu-memory-utilization ${GPU_MEM_LIMIT} \
         --log-stats-interval ${LOG_STATS_INTER} \
+        --preemption-mode ${PREEMP_MODE} \
         --collect-layer-fwd-time "
 
     if [ $OFFLOAD_TYPE -ne 0 ]; then

@@ -13,6 +13,6 @@ echo "Allocated Node lists...."
 cat $PBS_NODEFILE
 
 cd $PROJ_PATH
-echo "Start running default_online_pp.sh ... current dir: $(pwd)"
-./default_online_pp.sh
+echo "Start running default_online_real.sh ... current dir: $(pwd)"
+./default_online_real.sh
 cd -

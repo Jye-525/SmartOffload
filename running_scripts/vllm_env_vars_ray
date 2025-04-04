@@ -20,4 +20,5 @@ export VLLM_CACHE_ROOT=/tmp/vllm_jye/vllm_cache/
 export TOKENIZERS_PARALLELISM=false
 export VLLM_LOGGING_LEVEL=DEBUG
 
+[ -d $RAY_TMPDIR ] || mkdir -p $RAY_TMPDIR
 [ -d $VLLM_RPC_BASE_PATH ] || mkdir -p $VLLM_RPC_BASE_PATH

@@ -1,6 +1,6 @@
 {
     "Llama-3.1-405B": 32000,
     "Llama-3.3-70B-Instruct": 32000,
-    "goliath-120b": 4000, 
-    "deepseek-coder-33b-base": 32768
+    "goliath-120b": 3500, 
+    "deepseek-coder-33b-base": 32000
 }
