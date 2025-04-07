@@ -1,8 +1,9 @@
-#!/opt/homebrew/bin/bash
+#!/bin/bash
 ### Note the bash version should be 4.0 or above
-PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
+# PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
+PROJ_PATH="$HOME/moe_benchmark/SmartOffload/running_scripts/"
 
-source $PROJ_PATH/vllm_env_vars_ray
+source $PROJ_PATH/vllm_env_vars_ray sophia
 
 echo "Start running default_online_pp.sh ..."
 
@@ -12,7 +13,8 @@ echo "The current python executable path is $PYTHON_PATH"
 EXEC_PATH="$PROJ_PATH/../benchmarks/"
 MODEL_PATH="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
 BASE_DATASET_PATH="/lus/eagle/projects/RECUP/jye/datasets/"
-LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_logs/"
+# LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_logs/"
+LOG_BASE_PATH="${HOME}/moe_benchmark/SC25_logs_test_cpu/"
 
 # Model configurations
 declare -A MODEL_CONFIG=(
@@ -23,9 +25,9 @@ declare -A MODEL_CONFIG=(
     ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.8"
 )
 
-TESTA_CASES=("prompt-only") #  "prompt-only" "decode-only"  "prompt-decode"
-NUM_TRIES=2
-NUM_REQS=(10)
+TESTA_CASES=("prompt-decode") #  "prompt-only" "decode-only"  "prompt-decode"
+NUM_TRIES=1
+NUM_REQS=(50)
 
 # Associative array declaration for different datasets
 SUBTASKS="hotpotqa,2wikimqa" # used for longbench
@@ -36,18 +38,18 @@ declare -A DATASETS=(
 )
 
 # Associative array declaration for synthetic datasets
-INPUT_LENS=(8191)
-OUT_LENS=(1) 
+INPUT_LENS=(4095)
+OUT_LENS=(1024) 
 declare -A SYNT_DATASETS=(
     ["random"]="--dataset-name random --random-input-len __INPUT_LEN__ --random-output-len __OUT_LEN__ --random-range-ratio 1.0"
     ["fixed-len"]="--dataset-name fixed-len --fixed-input-len __INPUT_LEN__ --fixed-output-len __OUT_LEN__"
 )
 
-DATASET_NAME="longbench"
+DATASET_NAME="fixed-len"
 MODEL="deepseek-ai/deepseek-coder-33b-base"
-# Model="meta-llama/Llama-3.3-70B-Instruct"
-# Model="alpindale/goliath-120b"
-# Model="meta-llama/Llama-3.1-405B"
+# MODEL="meta-llama/Llama-3.3-70B-Instruct"
+# MODEL="alpindale/goliath-120b"
+# MODEL="meta-llama/Llama-3.1-405B"
 IFS=' ' read -r TP PP MAX_MODEL_LEN GPU_MEM_LIMIT <<< "${MODEL_CONFIG[$MODEL]}"
 
 OFFLOAD_TYPE=0 # 0 no offloading, 1: vllm naive offloading, 2: smart_offload
@@ -138,9 +140,11 @@ check_vllm_server_start() {
 }
 
 stop_vllm_server() {
-    killall -9 /home/jieye/venvs/vllm_moe/bin/python
+    # killall -9 /home/jieye/venvs/vllm_moe/bin/python
+    killall -9 /lus/eagle/projects/RECUP/jye/envs/vllm_env_sc/bin/python
     sleep 5
-    killall -9 /home/jieye/venvs/vllm_moe/bin/python 
+    # killall -9 /home/jieye/venvs/vllm_moe/bin/python
+    killall -9 /lus/eagle/projects/RECUP/jye/envs/vllm_env_sc/bin/python 
     echo "VLLM server stopped ..."
 }
 

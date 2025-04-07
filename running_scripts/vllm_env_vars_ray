@@ -2,7 +2,8 @@
 ## SO we need to copy ray to my virtural environment, and change its python to my python
 #cp /soft/applications/conda/2024-10-30-workshop/mconda3/bin/ray /home/jieye/venvs/vllm_moe/bin/
 
-IF_NAME=hsn0
+MACHINE=$1
+IF_NAME=$(if [[ $MACHINE == "polaris" ]]; then echo "hsn0"; else echo "bond0.2245"; fi)
 export HOST_IP=`ip -4 addr show $IF_NAME | grep -oP '(?<=inet\s)\d+(\.\d+){3}'`
 
 # ray related env variables
@@ -19,5 +20,9 @@ export TRITON_CACHE_DIR=/tmp/vllm_jye/triton_cache/
 export VLLM_CACHE_ROOT=/tmp/vllm_jye/vllm_cache/
 export TOKENIZERS_PARALLELISM=false
 export VLLM_LOGGING_LEVEL=DEBUG
+# export NCCL_DEBUG=INFO
+export NCCL_SOCKET_IFNAME=$IF_NAME
+export GLOO_SOCKET_IFNAME=$IF_NAME
 
 [ -d $VLLM_RPC_BASE_PATH ] || mkdir -p $VLLM_RPC_BASE_PATH
+[ -d $RAY_TMPDIR ] || mkdir -p $RAY_TMPDIR

@@ -12,13 +12,13 @@ test_cases=("prompt_only")
 
 PP=10
 TP=4
-#model="deepseek-ai/deepseek-coder-33b-base"
+model="deepseek-ai/deepseek-coder-33b-base"
 # model="meta-llama/Llama-3.3-70B-Instruct"
 # model="alpindale/goliath-120b"
-model="meta-llama/Llama-3.1-405B"
+# model="meta-llama/Llama-3.1-405B"
 model_path="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
 exec_path="${HOME}/moe_mix_precision/SmartOffload_polaris/benchmarks"
-executor_backend="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
+executor_backend="mp" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
 exec_mode="eager"
 USE_PROFILING=0
 max_model_len=32768

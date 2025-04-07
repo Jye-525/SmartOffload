@@ -1,0 +1,14 @@
+module use /soft/modulefiles
+module load conda
+module load spack-pe-base/0.7.1
+module load cmake/3.27.7
+
+# create virtual env
+#conda create -n vllm_env_sc python=3.11
+conda activate vllm_env_sc
+
+#for build vllm_v7_0_1 from source
+##pip install -vvv -e .
+
+# for build smartOffload from source
+##pip install -vvv -e . --no-build-isolation
