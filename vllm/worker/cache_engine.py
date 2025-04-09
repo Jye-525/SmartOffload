@@ -10,136 +10,183 @@ from vllm.logger import init_logger
 from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, LayerBlockType,
                         get_dtype_size, is_pin_memory_available, GiB_bytes)
 
+from collections import deque
+
 logger = init_logger(__name__)
 
-class SecondaryGpuCache:
-    """Secondary GPU cache for KV cache swapping memory."""
-    def __init__(self, device:str, dtype: torch.dtype) -> None:
-        self.allocated = {}
-        self._device = device
-        self._dtype = dtype
-        self.current_device = torch.cuda.current_device()
-        # logger.debug(f"+++++++++++++Secondary GPU cache is created on device {self._device}. Current device is {self.current_device}.")
-        
-        
-    def can_allocate(self, layer_id: int, kv_cache_shape: Tuple[int, ...]) -> bool:
-        # check if the current device has enough space to allocate the required space
-        logger.debug(f"+++++++++Layer {layer_id} kv_cache_shape: {kv_cache_shape}")
-        logger.debug(f"++++++++++Layer {layer_id} elem_num: {math.prod(kv_cache_shape)}")
-        logger.debug(f"++++++++++Layer {layer_id} dtype: {self._dtype}")
-        required_kv_cache_size = math.prod(kv_cache_shape) * get_dtype_size(self._dtype)
-        t_end_1 = time.time_ns()
-        # Step 1: get the free memory in the current device
-        free_gpu_mem1 = (
-            torch.cuda.memory_reserved()  # Total memory reserved by PyTorch
-            - torch.cuda.memory_allocated()  # Memory actually in use
-        )
-        free_gpu_mem2, total_gpu_memory = torch.cuda.mem_get_info()
-        total_gpu_free_mem = free_gpu_mem1 + free_gpu_mem2 # Total free memory on the device
-        t_end_2 = time.time_ns()
-        
-        # Step 2: check if the free memory is greater than the required size
-        #  --- we may need a threshold to avoid all the memory being used
-        if total_gpu_free_mem >= required_kv_cache_size:
-            logger.debug(f"+++++Layer {layer_id} required {total_gpu_free_mem/GiB_bytes:.3f} GB on the secondary GPU cache for kv cache {kv_cache_shape}. "
-                         f"It takes {(t_end_2 - t_start)/1e6:.3f} ms to calculate the size ({(t_end_1 - t_start)/1e6:.3f} ms) and free memory ({(t_end_2 - t_end_1)/1e6:.3f}).")
-            return True
-        else:
-            logger.debug("Not enough memory to allocate secondary GPU cache")
-            return False
+class SecondaryGPUCache:
+    def __init__(self, block_size, num_kv_heads, head_size, cpu_cache, dtype=torch.float16, device="cuda", fraction_of_gpu_memory=0.05):
+        self.block_size = block_size
+        self.num_kv_heads = num_kv_heads
+        self.head_size = head_size
+        self.dtype = dtype
+        self.device = device
+        self.cpu_cache = cpu_cache
+        self.dtype_size = torch.tensor([], dtype=dtype).element_size()
+        self.block_shape = (2, block_size, num_kv_heads, head_size)
+        self.block_bytes = torch.empty(self.block_shape, dtype=dtype).element_size() * torch.empty(self.block_shape, dtype=dtype).numel()
+        self.gpu_to_gpu_stream = torch.cuda.Stream(device=self.device)
+        self.gpu_to_host_stream = torch.cuda.Stream(device=self.device)
 
-    def allocate(self, 
-            layer_id: int, 
-            kv_cache_shape: Tuple[int, ...], 
-            org_src_to_dst: torch.Tensor):
-        t_start = time.time_ns()
-        # Step 1: call torch.zeros to allocate the required space
-        target_gpu_cache=torch.zeros(kv_cache_shape,
-                dtype=self._dtype,
-                device=self._device)
-        t_end_1 = time.time_ns()
-        # Step 2: create a mapping of the orignal dst to the new dst
-        block_table = self.allocated.setdefault(layer_id, {})
-        for i in range(kv_cache_shape[1]):
-            block_table[org_src_to_dst[i][1].item()] = {i:target_gpu_cache}
-        t_end_2 = time.time_ns()
-        logger.debug(f"+++++++++++++Layer {layer_id} allocate memory take {(t_end_1 - t_start)/1e6:.3f} ms, "
-                     f"build block_table for {len(org_src_to_dst)} blocks take {(t_end_2 - t_end_1)/1e6:.3f} ms, "
-                     f"total cost {(t_end_2 - t_start)/1e6:.3f} ms.")
+        self.blocks: Dict[int, torch.Tensor] = {}
+        self.available_blocks = deque()  # holds reusable s_ids
+        self.buffer = deque()  # holds (s_id, event)
+        self.s_to_h: Dict[int, int] = {}
+        self.h_to_s: Dict[int, int] = {}
+
+        self.s_id_counter = 0
+        self.max_blocks = self._get_max_blocks(fraction_of_gpu_memory)
+        self._preallocate_blocks(self.max_blocks)
+        print(f"=== SecondaryGPUCache has allocated {self.max_blocks} blocks of size {self.block_shape} on {self.device} with dtype {self.dtype}.")
+
+    def _get_max_blocks(self, fraction):
+        total_mem = torch.cuda.get_device_properties(self.device).total_memory
+        allocatable = int(total_mem * fraction)
+        return allocatable // self.block_bytes
+
+    def _preallocate_blocks(self, num_blocks):
+        for _ in range(num_blocks):
+            s_id = self.s_id_counter
+            self.blocks[s_id] = torch.empty(self.block_shape, dtype=self.dtype, device=self.device)
+            self.available_blocks.append(s_id)
+            self.s_id_counter += 1
+
+    def grow_cache(self, size_in_bytes):
+        num_new_blocks = size_in_bytes // self.block_bytes
+        self._preallocate_blocks(num_new_blocks)
+        self.max_blocks += num_new_blocks
+
+    def shrink_cache(self, size_in_bytes_to_shrink):
+        num_to_remove = size_in_bytes_to_shrink // self.block_bytes
+        removed = 0
+        while removed < num_to_remove and self.buffer:
+            s_id, event = self.buffer[-1]
+            if not event.query():
+                event.synchronize()
+            h_id = self.s_to_h.pop(s_id)
+            self.h_to_s.pop(h_id)
+            self.buffer.pop()
+            del self.self.blocks[s_id]
+            removed += 1
+
+
+    def swap_out(self, layer_id: int, gpu_src_blocks: torch.Tensor, src_ids: torch.Tensor):
+        try:
+            num_blocks = src_ids.shape[0]
+            p_ids = src_ids[:, 0].tolist()
+            h_ids = src_ids[:, 1].tolist()
+
+            s_ids = [None]*num_blocks
+            blocks_to_copy = []
+            dst_keys_list = [None]*num_blocks
+            dst_vals_list = [None]*num_blocks
+
+            # Track start time
+            t_start = time.time_ns()
+
+            # Step 1: Reuse or evict to get free blocks
+            for i, h_id in enumerate(h_ids):
+                if not self.available_blocks:
+                    evicted_s_id, evicted_event = self.buffer[-1]
+                    if not evicted_event.query():
+                        evicted_event.synchronize(self.gpu_to_host_stream)
+                    evicted_h_id = self.s_to_h.pop(evicted_s_id)
+                    self.h_to_s.pop(evicted_h_id)
+                    self.buffer.pop()
+                    self.available_blocks.append(evicted_s_id)
+
+                s_id = self.available_blocks.popleft()
+                self.s_to_h[s_id] = h_id
+                self.h_to_s[h_id] = s_id
+                s_ids[i] = s_id
+                # For approach-1
+                # blocks_to_copy.append((s_id, h_id))
+
+                # For approach-2
+                block = self.blocks[s_id]
+                dst_keys_list[i] = block[0]
+                dst_vals_list[i] = block[1]
+
+            t_evict = time.time_ns()
+
+
+            # --- Approach 1: Tensor by tensor copy ---
+            # with torch.cuda.stream(self.gpu_to_gpu_stream):
+            #     for i, (s_id, _) in enumerate(blocks_to_copy):
+            #         p_id = p_ids[i]
+            #         block = self.blocks[s_id]
+            #         block[0].copy_(gpu_src_blocks[0][p_id], non_blocking=True)
+            #         block[1].copy_(gpu_src_blocks[1][p_id], non_blocking=True)
+            #         event = torch.cuda.Event()
+            #         event.record(self.gpu_to_gpu_stream)
+            #         self.buffer.appendleft((s_id, event))
+
+
+            # --- Approach 2: Batch copy [BUT THIS CREATES A NEW MEMORY ALLOCATION FOR STACKING] ---
+            src_keys = gpu_src_blocks[0][p_ids]
+            src_vals = gpu_src_blocks[1][p_ids]
+            dst_keys = torch.stack(dst_keys_list)
+            dst_vals = torch.stack(dst_vals_list)
+
+            t_ready = time.time_ns()
+
+            event = torch.cuda.Event()
+            # Copy primary KV cache to secondary GPU KV cache 
+            dst_keys.copy_(src_keys)
+            dst_vals.copy_(src_vals)
             
+            # Enqueue lazy copy to the host memory too.
+            with torch.cuda.stream(self.gpu_to_host_stream):
+                self.cpu_cache[layer_id][0][h_ids].copy_(dst_keys, non_blocking=True)
+                self.cpu_cache[layer_id][1][h_ids].copy_(dst_vals, non_blocking=True)
+                event.record(self.gpu_to_host_stream)
             
-    def swap_out(self, layer_id: int, gpu_src: torch.Tensor, org_src_to_dst: torch.Tensor) -> None:
-        t_start = time.time_ns() 
-        t_gpu_start = torch.cuda.Event(enable_timing=True)
-        t_gpu_end = torch.cuda.Event(enable_timing=True)
-        t_gpu_start.record()
-        block_table = self.allocated.get(layer_id, None)
-        assert block_table is not None, "No block table found for the layer"
-        
-        num_blocks_to_swap = len(org_src_to_dst)
-        for i in range(num_blocks_to_swap):
-            # Step 1: get the original source and destination block Ids
-            org_src_block_id, org_dst_block_id = org_src_to_dst[i][0].item(), org_src_to_dst[i][1].item()
-            # Step 2: Extract the block of org_src_block_id from the gpu_src: key and value
-            src_key_block, src_value_block = gpu_src[0, org_src_block_id], gpu_src[1, org_src_block_id]
-            # Step 4: Extract the block of dst key and value buffer from the corresponding secondary gpu buffer  
-            dst_key_block, dst_value_block = block_table[org_dst_block_id][i][0, i], block_table[org_dst_block_id][i][1, i]
-            # Step 3: Copy the data from the source block to the destination block
-            dst_key_block.copy_(src_key_block)
-            dst_value_block.copy_(src_value_block)
-        t_gpu_end.record()
-        torch.cuda.synchronize()
-        t_end_1 = time.time_ns()
-        logger.debug(f"+++++++++++++Layer {layer_id} swap_out {num_blocks_to_swap} blocks to secondary gpu cache take cpu_time {(t_end_1 - t_start)/1e6:.3f} ms, "
-                     f"gpu_time {(t_gpu_start.elapsed_time(t_gpu_end)):.3f} ms.")
-            
-    def is_cached(self, layer_id: int, org_src_to_dst: torch.Tensor) -> bool:
-        # Step 1: Get the block table for the layer with layer_id
-        # If the block table is None, it means that the layer is not cached
-        t_start = time.time_ns()
-        is_cached = False
-        block_table = self.allocated.get(layer_id, None)
-        if block_table is not None:
-            # Step 2: check if org_src block id is in the block_table of the layer with layer_id
-            # In our case, either all the blocks are cached or none of them are cached.
-            # (To Do) For swap-in, may be partial on secondary GPU cache, and partial on GPU cache 
-            is_cached = True
-            for i in range(len(org_src_to_dst)):
-                org_src_block_id = org_src_to_dst[i][0].item()
-                if org_src_block_id not in block_table:
-                    is_cached = False
-                    break
-        t_end = time.time_ns()
-        if layer_id == 0:
-            logger.debug(f"+++++++++++++Layer {layer_id} check if cached {len(org_src_to_dst)} blocks take {(t_end - t_start)/1e6:.3f} ms.")    
-        return is_cached
+            for s_id in s_ids:
+                self.buffer.appendleft((s_id, event))
+
+            t_end = time.time_ns()
+
+            if True:
+                total_bytes = 2 * self.block_size * self.num_kv_heads * self.head_size * self.dtype_size * num_blocks
+                print(
+                    f"[Layer {layer_id}] swap_out {num_blocks} blocks | "
+                    f"Evict: {(t_evict - t_start)/1e6:.3f} ms | "
+                    f"Ready: {(t_ready - t_evict)/1e6:.3f} ms | "
+                    f"Copy: {(t_end - t_ready)/1e6:.3f} ms | "
+                    f"Total: {(t_end - t_start)/1e6:.3f} ms | "
+                    f"Bytes moved: {total_bytes} Bytes"
+                )
+
+        except Exception as e:
+            print(f"[Layer {layer_id}] swap_out failed: {e}")
+            import pdb
+            pdb.set_trace()
+
+    def swap_in(self, layer_id, gpu_dst_blocks: torch.Tensor, dst_ids: torch.Tensor):
+        try:
+            start_time = time.time_ns()
+            num_blocks = dst_ids.shape[0]
+            from_cpu = 0
+            for i in range(num_blocks):
+                h_id, p_id = dst_ids[i].tolist()
+                s_id = self.h_to_s.get(h_id, None)
+                if s_id is None:
+                    # Not available in the Secondary GPU cache, need to transfer in from the CPU.
+                    gpu_dst_blocks[0][p_id].copy_(self.cpu_cache[layer_id][0][h_id], non_blocking=True)
+                    gpu_dst_blocks[1][p_id].copy_(self.cpu_cache[layer_id][0][h_id], non_blocking=True)
+                    from_cpu += 1
+                    continue
+                block = self.blocks[s_id]
+                gpu_dst_blocks[0][p_id].copy_(block[0], non_blocking=True)
+                gpu_dst_blocks[1][p_id].copy_(block[1], non_blocking=True)
+            total_bytes = 2 * self.block_size * self.num_kv_heads * self.head_size * self.dtype_size * num_blocks
+            print(f"[Layer {layer_id}] Swap in {num_blocks} blocks of total size {total_bytes} took {(time.time_ns() - start_time)/1e6:.3f} ms. From CPU: {from_cpu} blocks.")
+        except Exception as e:
+            print(f"Error in swap_in: {e}")
+            import pdb; pdb.set_trace()
     
-    def swap_in(self, layer_id: int, gpu_dst: torch.Tensor, org_src_to_dst: torch.Tensor) -> None:
-        # Step 1: check if the blocks_to_swap_in are cached on secondary GPU cache.
-        t_start = time.time_ns()
-        t_gpu_start = torch.cuda.Event(enable_timing=True)
-        t_gpu_end = torch.cuda.Event(enable_timing=True)
-        t_gpu_start.record()
-        block_table = self.allocated.get(layer_id, None)
-        assert block_table is not None, "No block table found for the layer"
-        
-        for i in range(len(org_src_to_dst)): 
-            # Step 2: get the original source and destination block Ids
-            org_src_bid, org_dst_bid = org_src_to_dst[i][0].item(), org_src_to_dst[i][1].item()
-            # Step 3: Extract the block of org_dst_block_id from the gpu_dst: key and value
-            dst_key_block, dst_value_block = gpu_dst[0, org_dst_bid], gpu_dst[1, org_dst_bid]
-            # Step 4: Extract the block of src key and value buffer from corresponding secondary gpu buffer
-            snd_gpu_cache_bid = list(block_table[org_src_bid].keys())[0]
-            src_key_block, src_value_block = block_table[org_src_bid][snd_gpu_cache_bid][0, snd_gpu_cache_bid], block_table[org_src_bid][snd_gpu_cache_bid][1, snd_gpu_cache_bid]
-            # Step 4: Copy the data from the src block to the dst block
-            dst_key_block.copy_(src_key_block)
-            dst_value_block.copy_(src_value_block)
-        t_gpu_end.record()
-        torch.cuda.synchronize()
-        t_end = time.time_ns()
-        logger.debug(f"+++++++++++++Layer {layer_id} swap_in {len(org_src_to_dst)} blocks from secondary gpu cache take cpu_time {(t_end - t_start)/1e6:.3f} ms, "
-                     f"gpu_time {(t_gpu_start.elapsed_time(t_gpu_end)):.3f} ms.")
-            
+
+
 
 class CacheEngine:
     """Manages the KV cache.
@@ -192,7 +239,7 @@ class CacheEngine:
             self.num_gpu_blocks, self.device_config.device_type)
         self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")
         self.enable_secondary_gpu_cache = True
-        self.secondary_gpu_cache = SecondaryGpuCache(self.device_config.device_type, self.dtype)
+        self.secondary_gpu_cache = SecondaryGPUCache(self.block_size, self.num_kv_heads, self.head_size, self.cpu_cache, self.dtype, self.device_config.device_type)
 
     def _allocate_kv_cache(
         self,
@@ -224,11 +271,7 @@ class CacheEngine:
             t_gpu_start.record()
             num_blocks_to_swap = len(src_to_dst) 
             for i in range(self.num_attention_layers):
-                if self.secondary_gpu_cache.is_cached(i, src_to_dst):
-                    self.secondary_gpu_cache.swap_in(i, self.gpu_cache[i], src_to_dst)
-                else:
-                    self.attn_backend.swap_blocks(self.cpu_cache[i], self.gpu_cache[i],
-                                                src_to_dst)
+                self.secondary_gpu_cache.swap_in(i, self.gpu_cache[i], src_to_dst)
             t_gpu_end.record()
             torch.cuda.synchronize()
             end_time = time.time_ns()
@@ -248,7 +291,7 @@ class CacheEngine:
             logger.debug(f"+++++++++++++++swap_in {num_blocks_to_swap} blocks from cpu cache took cpu_time {(end_time - start_time)/1e6:.3f} ms, gpu_time {(t_gpu_start.elapsed_time(t_gpu_end)):.3f} ms.")
 
     def swap_out(self, src_to_dst: torch.Tensor) -> None:
-        logger.debug(f"In cache_engine swap_out, src_to_dst tensor is allocated on device: {src_to_dst.device}")
+        print(f"In cache_engine swap_out, src_to_dst tensor is allocated on device: {src_to_dst.device}")
         # Question 1: when to released the secondary gpu cache?
         if self.enable_secondary_gpu_cache:
             start_time = time.time_ns()
@@ -259,16 +302,11 @@ class CacheEngine:
             kv_cache_shape = self.attn_backend.get_kv_cache_shape(
                 num_blocks_to_swap, self.block_size, self.num_kv_heads, self.head_size)
             for i in range(self.num_attention_layers):
-                if self.secondary_gpu_cache.can_allocate(i, kv_cache_shape):
-                    self.secondary_gpu_cache.allocate(i, kv_cache_shape, src_to_dst)
-                    self.secondary_gpu_cache.swap_out(i, self.gpu_cache[i], src_to_dst)
-                else:
-                    self.attn_backend.swap_blocks(self.gpu_cache[i], self.cpu_cache[i],
-                                                src_to_dst)
+                self.secondary_gpu_cache.swap_out(i, self.gpu_cache[i], src_to_dst)
             t_gpu_end.record()
             torch.cuda.synchronize()
             end_time = time.time_ns()
-            logger.debug(f"+++++++++++++++Swap out {num_blocks_to_swap} blocks per layer to the second gpu cache take cpu_time {(end_time - start_time)/1e6:.3f} ms, gpu_time {(t_gpu_start.elapsed_time(t_gpu_end)):.3f} ms.")
+            print(f"+++++++++++++++Swap out {num_blocks_to_swap} blocks per layer to the second gpu cache take cpu_time {(end_time - start_time)/1e6:.3f} ms, gpu_time {(t_gpu_start.elapsed_time(t_gpu_end)):.3f} ms.")
         else:
             start_time = time.time_ns()
             num_blocks_to_swap = len(src_to_dst)
