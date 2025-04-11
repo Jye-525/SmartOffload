@@ -64,7 +64,7 @@ class PyNcclCommunicator:
         self.available = True
         self.disabled = False
 
-        logger.info("vLLM is using nccl==%s", self.nccl.ncclGetVersion())
+        logger.info(f"vLLM is using nccl=={self.nccl.ncclGetVersion()} on rank {self.rank} of {self.world_size}.")
 
         if self.rank == 0:
             # get the unique id from NCCL
@@ -90,6 +90,8 @@ class PyNcclCommunicator:
         # now `device` is a `torch.device` object
         assert isinstance(device, torch.device)
         self.device = device
+        
+        # logger.debug(f"++++++vLLM pyNCCLcommunicator, I am rank {self.rank} of {self.world_size} on device {self.device}") 
         # nccl communicator and stream will use this device
         # `torch.cuda.device` is a context manager that changes the
         # current cuda device to the specified one

@@ -3,7 +3,7 @@ from typing import List, Dict, Tuple
 from collections import defaultdict
 
 ############### Extract the parameters size of each layer from the log file ###############
-def extract_parameters_per_layer(file_name) -> List[Dict[str, any]]:
+def extract_parameters_per_layer(file_name, TP_ranks) -> List[Dict[str, any]]:
     """
     Extracts parameters per layer from the log file.
     """
@@ -22,12 +22,18 @@ def extract_parameters_per_layer(file_name) -> List[Dict[str, any]]:
                 # Extract the layer name and parameters
                 layer_name = match.group(1)
                 weights_tensor_shape = match.group(2)
-                weights_size = float(match.group(3))
-
+                weights_size_per_rank = float(match.group(3))
+                weights_size = weights_size_per_rank * TP_ranks  # MB
+                # Convert to MB
+                weights_size_gb = weights_size / 1024.0  # Convert to GB
+                
                 param_info = {
                     'layer_name': layer_name,
                     'weights_tensor_shape': weights_tensor_shape,
-                    'weights_size(MB)': float(weights_size)
+                    'weights_size_per_rank(MB)': weights_size_per_rank,
+                    'tp_ranks': TP_ranks,
+                    'weights_size(MB)': weights_size,
+                    'weights_size(GB)': weights_size_gb, 
                 }
                 target_results.append(param_info)
           
@@ -38,7 +44,7 @@ def write_layer_parameters_to_csv(layer_parameters: List[Dict[str, any]], output
     Write the extracted layer parameters to a CSV file.
     """
     with open(output_csv_file, mode='w', newline='') as csvfile:
-        fieldnames = ['layer_name', 'weights_tensor_shape', 'weights_size(MB)']
+        fieldnames = ['layer_name', 'weights_tensor_shape', 'weights_size_per_rank(MB)', 'tp_ranks', 'weights_size(MB)', 'weights_size(GB)']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
         writer.writeheader()
@@ -474,7 +480,7 @@ if __name__ == "__main__":
     base_csv_file_prefix= f"{model_name}_prompt{prompt_len}_gen{gen_len}_requests{requests}_tp{tp_ranks}_pp{pp_ranks}_gpu{gpu}"
     
     # Extract the parameters per layer from the log file
-    layer_parameters = extract_parameters_per_layer(logfile)
+    layer_parameters = extract_parameters_per_layer(logfile, tp_ranks)
     # Write the layer parameters to a CSV file
     layer_parameters_csv_file = os.path.join(base_csv_dir, f"{base_csv_file_prefix}_layer_parameters.csv")
     write_layer_parameters_to_csv(layer_parameters, layer_parameters_csv_file)

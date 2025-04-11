@@ -638,9 +638,12 @@ class Scheduler:
 
                 # Do preemption
                 if do_preempt:
+                    num_evicted_tokens = victim_seq_group.get_seqs()[0].get_num_computed_tokens()
                     preempted_mode = self._preempt(victim_seq_group,
                                                    blocks_to_swap_out)
-                    logger.debug(f"Preempted request {victim_seq_group.request_id} using ${preempted_mode} mode")
+                    logger.debug(f"Preempted request {victim_seq_group.request_id} using {preempted_mode} mode." 
+                                 f"Number of evicted tokens: {num_evicted_tokens}, "
+                                 f"Number of blocks_to_swap {len(blocks_to_swap_out)}")
                     if preempted_mode == PreemptionMode.RECOMPUTE:
                         preempted.append(victim_seq_group)
                     else:

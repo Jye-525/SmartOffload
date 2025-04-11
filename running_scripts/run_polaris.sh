@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#PBS -l select=10:system=polaris
+#PBS -l select=4:system=polaris
 #PBS -l filesystems=home:eagle:grand
 #PBS -l walltime=01:00:00
 #PBS -q debug-scaling

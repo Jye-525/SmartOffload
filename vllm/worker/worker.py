@@ -24,7 +24,7 @@ from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import (ExecuteModelRequest, IntermediateTensors,
                            SequenceGroupMetadata, SequenceGroupMetadataDelta)
 from vllm.utils import (GiB_bytes, MemorySnapshot, bind_kv_cache,
-                        memory_profiling)
+                        memory_profiling, MiB_bytes)
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.enc_dec_model_runner import EncoderDecoderModelRunner
 from vllm.worker.model_runner import GPUModelRunnerBase, ModelRunner
@@ -264,7 +264,8 @@ class Worker(LocalOrDistributedWorkerBase):
                " PyTorch activation peak memory takes "
                f"{(result.torch_peak_increase / GiB_bytes):.2f}GiB;"
                " the rest of the memory reserved for KV Cache is "
-               f"{(available_kv_cache_memory / GiB_bytes):.2f}GiB."
+               f"{(available_kv_cache_memory / GiB_bytes):.2f}GiB;"
+               f" KV cache block size is {cache_block_size / MiB_bytes:.3f}MiB."
                f"The engine can allocate {num_gpu_blocks} GPU blocks,"
                f" {num_cpu_blocks} CPU blocks on PP Rank {get_pp_group().rank_in_group}"
                f" TP Rank {get_tensor_model_parallel_rank()}.")

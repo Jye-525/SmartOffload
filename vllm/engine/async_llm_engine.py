@@ -300,10 +300,12 @@ class _AsyncLLMEngine(LLMEngine):
              ) = self.scheduler[virtual_engine].schedule()
 
             # Recoder the KV cache utilization for the current iteration
-            avg_gpu_kv_cache_usage, avg_cpu_kv_cache_usage = self.get_avg_kv_cache_usage()
-            logger.debug(f"Avg KV cache usage of all schedulers during the this forward iteration. "
-                         f"Scheduler id: {virtual_engine} scheduled {len(seq_group_metadata_list)} requests, "
-                         f"GPU KV cache usage: {avg_gpu_kv_cache_usage * 100:.1f}%, CPU KV cache usage: {avg_cpu_kv_cache_usage * 100:.1f}%")
+            if virtual_engine == 0:
+                per_scheduler_costs = [f"{scheduler.get_num_unfinished_seq_groups()}:{len(scheduler.running)}" for scheduler in self.scheduler]
+                avg_gpu_kv_cache_usage, avg_cpu_kv_cache_usage = self.get_avg_kv_cache_usage()
+                logger.debug(f"Avg KV cache usage of all schedulers during the this forward iteration. "
+                            f"Scheduler id: {virtual_engine} scheduled {len(seq_group_metadata_list)} requests, per_scheduler_costs: {per_scheduler_costs}"
+                            f"GPU KV cache usage: {avg_gpu_kv_cache_usage * 100:.1f}%, CPU KV cache usage: {avg_cpu_kv_cache_usage * 100:.1f}%")
             
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs

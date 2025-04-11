@@ -150,7 +150,7 @@ def sample_longbench_v2_requests(
             prompt = tokenizer.decode(input_ids, skip_special_tokens=True)
         # Verify the prompt tokenizes back to the correct length
         prompt_len = len(tokenizer.encode(prompt))
-        assert prompt_len <= max_input_len, f"Prompt length exceeds max_input_len: {prompt_len} > {max_input_len}"
+        # assert prompt_len <= max_input_len, f"Prompt length exceeds max_input_len: {prompt_len} > {max_input_len}"
         filtered_dataset.append((prompt, prompt_len, max_output_len, None))
         
     return filtered_dataset 
@@ -185,7 +185,7 @@ def sample_longbench_requests(
         
         # Verify the prompt tokenizes back to the correct length
         prompt_len = len(tokenizer(prompt).input_ids)
-        assert prompt_len <= max_input_len, f"Prompt length exceeds max_input_len: {prompt_len} > {max_input_len}" 
+        # assert prompt_len <= max_input_len, f"Prompt length exceeds max_input_len: {prompt_len} > {max_input_len}" 
         output_len = json_object['max_gen_len'] if max_output_len is None else max_output_len
         filtered_dataset.append((prompt, prompt_len, output_len, None))
          

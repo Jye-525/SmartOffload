@@ -140,9 +140,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         logger.debug(f"BlockManager check if can allocate kv cache blocks for seq_group {seq_group.request_id}." 
                          f" total_gpu_blocks: {self.num_total_gpu_blocks} free_gpu_blocks: {num_free_gpu_blocks}"
                          f" num_required_blocks: {num_required_blocks} watermark_blocks: {self.watermark_blocks} "
-                         f" watermark: {self.watermark} "
-                         f" GPU KV cache usage (before): {(self.num_total_gpu_blocks - num_free_gpu_blocks) / self.num_total_gpu_blocks * 100:.2f}%"
-                         f" GPU KV cache usage (after): {(self.num_total_gpu_blocks - num_free_gpu_blocks + num_required_blocks) / self.num_total_gpu_blocks * 100:.2f}%")
+                         f" watermark: {self.watermark} ") 
         # Use watermark to avoid frequent cache eviction.
         if (self.num_total_gpu_blocks - num_required_blocks <
                 self.watermark_blocks):

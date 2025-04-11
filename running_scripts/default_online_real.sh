@@ -17,18 +17,23 @@ LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_logs_baseline/"
 # Model configurations
 declare -A MODEL_CONFIG=(
     # Format: "TP PP MAX_MODEL_LEN GPU_MEMORY_LIMIT"
-    ["deepseek-ai/deepseek-coder-33b-base"]="4 1 32768 0.9"
-    ["meta-llama/Llama-3.3-70B-Instruct"]="4 2 32768 0.9"
-    ["alpindale/goliath-120b"]="4 4 4096 0.9"
-    ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.9"
+    ["deepseek-ai/deepseek-coder-33b-base"]="4 1 32768 0.8"
+    ["meta-llama/Llama-3.3-70B-Instruct"]="4 2 32768 0.8" # 0.77 is minimum gpu limit
+    ["alpindale/goliath-120b"]="4 4 4096 0.8" # 0.45 is minimum gpu limit
+    ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.8" # 0.8 is minimum gpu limit 
 )
 
-TESTA_CASES=("prompt-only") #  "prompt-only" "decode-only"  "prompt-decode"
+TESTA_CASES=("prompt-decode") #  "prompt-only" "decode-only"  "prompt-decode"
 NUM_TRIES=1
-NUM_REQS=(10 50 150 200)
+NUM_REQS=(200)
+# NUM_REQS=(500)
+# NUM_REQS=(10 50 100 150 200)
+# NUM_REQS=(250 300 350 400 450 500)
+#NUM_REQS=(300 350 400)
+# NUM_REQS=(500)
 
 # Associative array declaration for different datasets
-SUBTASKS="hotpotqa" # used for longbench
+SUBTASKS="multi_news" # used for longbench, choices: gov_report, multi_news, lcc (500)
 declare -A DATASETS=(
     ["longbench"]="--dataset-name longbench --dataset-path ${BASE_DATASET_PATH} --longbench-subtasks \"${SUBTASKS}\""
     ["gsm8k"]="--dataset-name gsm8k --dataset-path ${BASE_DATASET_PATH}"
@@ -43,11 +48,11 @@ declare -A SYNT_DATASETS=(
     ["fixed-len"]="--dataset-name fixed-len --fixed-input-len __INPUT_LEN__ --fixed-output-len __OUT_LEN__"
 )
 
-DATASET_NAME="longbench"
+DATASET_NAME="longbench" # longbench, gsm8k
 # MODEL="deepseek-ai/deepseek-coder-33b-base"
-# Model="meta-llama/Llama-3.3-70B-Instruct"
-# Model="alpindale/goliath-120b"
-Model="meta-llama/Llama-3.1-405B"
+#MODEL="meta-llama/Llama-3.3-70B-Instruct"
+MODEL="alpindale/goliath-120b"
+# MODEL="meta-llama/Llama-3.1-405B"
 IFS=' ' read -r TP PP MAX_MODEL_LEN GPU_MEM_LIMIT <<< "${MODEL_CONFIG[$MODEL]}"
 
 OFFLOAD_TYPE=0 # 0 no offloading, 1: vllm naive offloading, 2: smart_offload
@@ -63,7 +68,7 @@ declare -A OFFLOAD_CONFIG=(
 EXECUTOR_BACKEND="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
 #EXEC_MODE="eager" # "eager"
 LOG_STATS_INTER=1 # in seconds
-PREEMP_MODE="recompute" # "recompute" or "swap"
+PREEMP_MODE="swap" # "recompute" or "swap"
 
 MODEL_NAME=$(echo $MODEL | cut -d'/' -f2)
 LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}/"
@@ -76,8 +81,6 @@ LOG_PATH="${LOG_PATH}/${SUB_PATH}/"
 
 ###################################### Related Helper functions #############################################
 ###################################### Start and Stop Ray Clsuter ###########################################
-clean_ray_dir
-
 start_ray_cluster() {
     RAY_SCRIPT="$PROJ_PATH/start_ray_cluster.sh"
     eval "$RAY_SCRIPT"
@@ -295,7 +298,11 @@ if [ $OFFLOAD_TYPE -eq 0 ]; then
         if [ "$test_case" = "prompt-only" ]; then
             gen_len=1 # decode length
         elif [ "$test_case" = "prompt-decode" ]; then
-            gen_len=-1 # decode length, meaning that we did not override the decode length
+            if [ "$DATASET_NAME" = "longbench" ]; then
+                gen_len=$(jq '.'${SUBTASKS} $EXEC_PATH/longbench/config/dataset2maxlen.json)
+            else
+                gen_len=-1 # decode length, meaning that we did not override the decode length
+            fi
         else
             echo "Invalid test case ${test_case}. Continue next..."
             continue
@@ -313,7 +320,11 @@ elif [ $OFFLOAD_TYPE -eq 1 ]; then
         if [ "$test_case" = "prompt-only" ]; then
             gen_len=1 # decode length
         elif [ "$test_case" = "prompt-decode" ]; then
-            gen_len=-1 # decode length, meaning that we did not override the decode length
+            if [ "$DATASET_NAME" = "longbench" ]; then
+                gen_len=$(jq '.'${SUBTASKS} $EXEC_PATH/longbench/config/dataset2maxlen.json)
+            else
+                gen_len=-1 # decode length, meaning that we did not override the decode length
+            fi
         else
             echo "Invalid test case ${test_case}. Continue next..."
             continue
@@ -329,7 +340,11 @@ elif [ $OFFLOAD_TYPE -eq 2 ]; then
         if [ "$test_case" = "prompt-only" ]; then
             gen_len=1 # decode length
         elif [ "$test_case" = "prompt-decode" ]; then
-            gen_len=-1 # decode length, meaning that we did not override the decode length
+            if [ "$DATASET_NAME" = "longbench" ]; then
+                gen_len=$(jq '.'${SUBTASKS} $EXEC_PATH/longbench/config/dataset2maxlen.json)
+            else
+                gen_len=-1 # decode length, meaning that we did not override the decode length
+            fi
         else
             echo "Invalid test case ${test_case}. Continue next..."
             continue

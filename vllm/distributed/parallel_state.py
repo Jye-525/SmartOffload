@@ -1039,6 +1039,7 @@ def initialize_model_parallel(
                                     backend,
                                     use_message_queue_broadcaster=True,
                                     group_name="tp")
+    # logger.debug(f"++++++++++++Successfully initialized tensor parallel group, local_rank={get_world_group().local_rank}")
 
     # Build the pipeline model-parallel groups.
     num_pipeline_model_parallel_groups: int = (world_size //
@@ -1056,6 +1057,7 @@ def initialize_model_parallel(
                                     backend,
                                     use_custom_allreduce=False,
                                     group_name="pp")
+    # logger.debug(f"++++++++++++Successfully initialized pipeline parallel group, local_rank={get_world_group().local_rank}")
 
 
 def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
