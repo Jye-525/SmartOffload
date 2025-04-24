@@ -907,6 +907,7 @@ class Scheduler:
             swapped_queue.popleft()
             self._swap_in(seq_group, blocks_to_swap_in)
             self._append_slots(seq_group, blocks_to_copy, enable_chunking)
+            logger.info(f"[timestamp: {time.time_ns()}] Swapped Req {seq_group.request_id} is scheduled, is_prefill: {is_prefill}")
             if is_prefill:
                 prefill_seq_groups.append(
                     ScheduledSequenceGroup(
@@ -1777,10 +1778,12 @@ class Scheduler:
                 self.num_cumulative_preemption + 1,
             )
         self.num_cumulative_preemption += 1
-
+            
         if preemption_mode == PreemptionMode.RECOMPUTE:
+            logger.info(f"[timestamp: {time.time_ns()}] Req {seq_group.request_id} is preempted with mode {preemption_mode}")
             self._preempt_by_recompute(seq_group)
         elif preemption_mode == PreemptionMode.SWAP:
+            logger.info(f"[timestamp: {time.time_ns()}] Req {seq_group.request_id} is preempted with mode {preemption_mode} and swapped out to CPU")
             self._preempt_by_swap(seq_group, blocks_to_swap_out)
         else:
             raise AssertionError("Invalid preemption mode.")
