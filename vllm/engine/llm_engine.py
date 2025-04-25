@@ -2,6 +2,7 @@
 
 import copy
 import time
+import datetime
 from collections import Counter as collectionsCounter
 from collections import deque
 from contextlib import contextmanager
@@ -70,6 +71,10 @@ _G = TypeVar("_G", bound=BaseTokenizerGroup, default=BaseTokenizerGroup)
 _O = TypeVar("_O", RequestOutput, PoolingRequestOutput)
 _R = TypeVar("_R", default=Any)
 
+def get_precise_time():
+  """Returns the current time in YYYY-MM-DD HH:MM:SS:ms:us format."""
+  now = datetime.datetime.now()
+  return now.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 @dataclass
 class SchedulerOutputState:
@@ -1375,9 +1380,10 @@ class LLMEngine:
              ) = self.scheduler[virtual_engine].schedule()
             
             total_scheduled_reqs = len(scheduler_outputs.scheduled_seq_groups)
-            logger.info(f"[timestamp: {time.time_ns()}] Scheduler {virtual_engine} scheduled {total_scheduled_reqs} total reqs, {scheduler_outputs.num_prefill_groups} prefill reqs, "
+            # logger.info(f"[timestamp: {time.time_ns()}] Scheduler {virtual_engine} scheduled {total_scheduled_reqs} total reqs, {scheduler_outputs.num_prefill_groups} prefill reqs, "
+            #             f"{total_scheduled_reqs - scheduler_outputs.num_prefill_groups} decode reqs, {scheduler_outputs.preempted} preempted reqs, total batched tokens {scheduler_outputs.num_batched_tokens}")
+            logger.info(f"[timestamp: {get_precise_time()}] Scheduler {virtual_engine} scheduled {total_scheduled_reqs} total reqs, {scheduler_outputs.num_prefill_groups} prefill reqs, "
                          f"{total_scheduled_reqs - scheduler_outputs.num_prefill_groups} decode reqs, {scheduler_outputs.preempted} preempted reqs, total batched tokens {scheduler_outputs.num_batched_tokens}")
-
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
 
