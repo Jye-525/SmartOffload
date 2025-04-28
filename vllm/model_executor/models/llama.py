@@ -49,6 +49,7 @@ from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, maybe_remap_kv_scale_name)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
+import vllm.envs as envs
 
 from .interfaces import SupportsLoRA, SupportsPP
 from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
@@ -553,13 +554,25 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             gpu_end_time.synchronize()
             gpu_duration = gpu_start_time.elapsed_time(gpu_end_time)
             cpu_end_time = get_precise_time()
-            if attn_metadata.num_prefill_tokens > 0:
-                # prefill request
-                logger.info(f"[start_timestamp: {cpu_start_time}][end_timestamp: {cpu_end_time}][gpu_dur(ms): {gpu_duration}] Processing prefill forward with {attn_metadata.num_prefills} reqs, {attn_metadata.num_prefill_tokens} tokens")
-            
-            if attn_metadata.num_decode_tokens > 0:
-                # decode request
-                logger.info(f"[start_timestamp: {cpu_start_time}][end_timestamp: {cpu_end_time}][gpu_dur(ms): {gpu_duration}] Processing decode forward with {attn_metadata.num_decode_tokens} reqs, {attn_metadata.num_decode_tokens} tokens")
+            if envs.VLLM_USE_V1:
+                # This may have problem for separating prefill and decode
+                num_reqs = len(attn_metadata.num_input_tokens)
+                if attn_metadata.num_input_tokens != num_reqs:
+                    # prefill request
+                    logger.info(f"[start_timestamp: {cpu_start_time}][end_timestamp: {cpu_end_time}][gpu_dur(ms): {gpu_duration}] Processing prefill forward with {num_reqs} reqs, {attn_metadata.num_input_tokens} tokens")
+                else:
+                    # decode request
+                    logger.info(f"[start_timestamp: {cpu_start_time}][end_timestamp: {cpu_end_time}][gpu_dur(ms): {gpu_duration}] Processing decode forward with {num_reqs} reqs, {attn_metadata.num_input_tokens} tokens")
+            else:
+                # use V0
+                if attn_metadata.num_prefill_tokens > 0:
+                    # prefill request
+                    logger.info(f"[start_timestamp: {cpu_start_time}][end_timestamp: {cpu_end_time}][gpu_dur(ms): {gpu_duration}] Processing prefill forward with {attn_metadata.num_prefills} reqs, {attn_metadata.num_prefill_tokens} tokens")
+                
+                if attn_metadata.num_decode_tokens > 0:
+                    # decode request
+                    logger.info(f"[start_timestamp: {cpu_start_time}][end_timestamp: {cpu_end_time}][gpu_dur(ms): {gpu_duration}] Processing decode forward with {attn_metadata.num_decode_tokens} reqs, {attn_metadata.num_decode_tokens} tokens")
+
         else:
             # dummy run
             model_output = self.model(input_ids, positions,
