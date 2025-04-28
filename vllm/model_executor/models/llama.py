@@ -32,6 +32,8 @@ from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
@@ -53,7 +55,8 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
-
+from vllm.utils import get_precise_time
+logger = init_logger(__name__)
 
 class LlamaMLP(nn.Module):
 
@@ -538,8 +541,30 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        model_output = self.model(input_ids, positions, intermediate_tensors,
-                                  inputs_embeds)
+        attn_metadata = get_forward_context().attn_metadata
+        if attn_metadata is not None:
+            cpu_start_time = get_precise_time()
+            gpu_start_time = torch.cuda.Event(enable_timing=True)
+            gpu_end_time = torch.cuda.Event(enable_timing=True)
+            gpu_start_time.record()
+            model_output = self.model(input_ids, positions, intermediate_tensors,
+                                    inputs_embeds)
+            gpu_end_time.record()
+            gpu_end_time.synchronize()
+            gpu_duration = gpu_start_time.elapsed_time(gpu_end_time)
+            cpu_end_time = get_precise_time()
+            if attn_metadata.num_prefill_tokens > 0:
+                # prefill request
+                logger.info(f"[start_timestamp: {cpu_start_time}][end_timestamp: {cpu_end_time}][gpu_dur(ms): {gpu_duration}] Processing prefill forward with {attn_metadata.num_prefills} reqs, {attn_metadata.num_prefill_tokens} tokens")
+            
+            if attn_metadata.num_decode_tokens > 0:
+                # decode request
+                logger.info(f"[start_timestamp: {cpu_start_time}][end_timestamp: {cpu_end_time}][gpu_dur(ms): {gpu_duration}] Processing decode forward with {attn_metadata.num_decode_tokens} reqs, {attn_metadata.num_decode_tokens} tokens")
+        else:
+            # dummy run
+            model_output = self.model(input_ids, positions,
+                                      intermediate_tensors, inputs_embeds)
+        
         return model_output
 
     def compute_logits(

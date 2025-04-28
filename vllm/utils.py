@@ -2612,3 +2612,8 @@ def is_torch_equal_or_newer(target: str) -> bool:
     except Exception:
         # Fallback to PKG-INFO to load the package info, needed by the doc gen.
         return Version(importlib.metadata.version('torch')) >= Version(target)
+
+def get_precise_time():
+   """Returns the current time in YYYY-MM-DD HH:MM:SS:ms:us format."""
+   now = datetime.datetime.now()
+   return now.strftime("%Y-%m-%d %H:%M:%S.%f")
