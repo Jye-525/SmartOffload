@@ -207,5 +207,3 @@ Ignore the script folder
 scripts/
 *.nsys-rep  # Exclude files that may contain secrets
 report_mp.nsys-rep
-
-running_scripts/

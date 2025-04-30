@@ -7,7 +7,7 @@ import os
 import psutil
 
 device_id = 0
-csv_file_path = "/home/jieye/viper2/benchmark_mii/perf_results/"
+csv_file_path = "/home/jieye/moe_mix_precision/monitor_cpu/"
 metric_values = []
 
 def monitor_host_mem(csv_file_path):
@@ -45,7 +45,7 @@ def monitor_host_mem(csv_file_path):
             used_mem = round(((vm_stats.total - vm_stats.available) / (1024**2)), 2)  # in MB
             percent = vm_stats.percent
             metric_values.append([time.time_ns(), total_mem, used_mem, percent])
-            time.sleep(0.01)  # Adjust the sleep interval as needed
+            time.sleep(1)  # Adjust the sleep interval as needed
     except KeyboardInterrupt:
         print(f"====== Got interrupt in GPU monitoring script {device_id} ======")
         dump_to_csv()

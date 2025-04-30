@@ -1325,7 +1325,8 @@ class LLMEngine:
             
             avg_gpu_kv_cache_usage, avg_cpu_kv_cache_usage = self.get_avg_kv_cache_usage()
             logger.debug(f"Avg KV cache usage of all schedulers during the this forward iteration. "
-                         f"Scheduler id: {virtual_engine} scheduled {len(seq_group_metadata_list)} requests, "
+                         f"Scheduler id: {virtual_engine} scheduled {len(seq_group_metadata_list)} requests "
+                         f"(scheduled_groups={len(scheduler_outputs.scheduled_seq_groups)}, prefill_groups={scheduler_outputs.num_prefill_groups}, total_batched_tokens={scheduler_outputs.num_batched_tokens}, running={scheduler_outputs.running_queue_size}, ignored={scheduler_outputs.ignored_seq_groups}, preempted={scheduler_outputs.preempted}), "
                          f"GPU KV cache usage: {avg_gpu_kv_cache_usage * 100:.1f}%, CPU KV cache usage: {avg_cpu_kv_cache_usage * 100:.1f}%")
 
             ctx.seq_group_metadata_list = seq_group_metadata_list

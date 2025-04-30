@@ -56,8 +56,8 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
 
 from vllm.model_executor.offload_buffer import OffloadBuffer
 from vllm.spec_decode.util import nvtx_range
-from vllm.utils import see_memory_usage, GiB_bytes
-import time, math
+from vllm.utils import see_memory_usage
+import time
 
 logger = init_logger(__name__)
 
@@ -312,14 +312,10 @@ class LlamaModel(nn.Module):
         quant_config = vllm_config.quant_config
         lora_config = vllm_config.lora_config
         cpu_offload_config = cache_config.cpu_offload_config
-       
-        self.smart_offload = False
-        self.smart_offload_dynamic = cpu_offload_config.smart_offload_dynamic
-        self.smart_offload_per_block_time = -1 # assume 1 milliseconds
-        self.smart_offload_pci_bandwidth = 23 # GB/s
-        self.smart_offload_init_tokens = 0
-        
+
         self.timing_layer_fwd = vllm_config.collect_layer_fwd_time
+        # self.timing_attn_mlp = vllm_config.collect_attn_mlp_fwd_time
+        
         self.config = config
         self.cache_config = cache_config
         self.quant_config = quant_config
@@ -349,11 +345,9 @@ class LlamaModel(nn.Module):
                                         prefix=prefix),
                 prefix=f"{prefix}.layers",
             )
-            self.smart_offload_per_block_size =  self.get_per_decode_layer_bytes() / GiB_bytes # GB
         else:
-            self.smart_offload = True
             # create offload buffer
-            self.offload_buffer = OffloadBuffer(cpu_offload_config.smart_offload_interval,
+            self.offload_buffer = OffloadBuffer(cpu_offload_config.cpu_offload_layer_interval,
                                                 cpu_offload_config.param_offload_target)
             self.start_layer, self.end_layer, self.layers = make_layers_1(
                 config.num_hidden_layers,
@@ -364,14 +358,9 @@ class LlamaModel(nn.Module):
                 prefix=f"{prefix}.layers",
                 offload_fn=self.offload_buffer.create_module,
             )
-            self.smart_offload_per_block_size =  self.offload_buffer.get_per_layer_params_Bytes() / GiB_bytes # GB
-        
-        self.avg_H2D_transfer_time = 0
-         
         logger.info(f"PP Rank {get_pp_group().rank_in_group}/{get_pp_group().ranks} "
                     f"TP Rank {get_tensor_model_parallel_rank()} include {len(self.layers)} layers,"
-                    f" start layer: {self.start_layer} end layer: {self.end_layer}, per decode layer size: {self.smart_offload_per_block_size} GB")
-        
+                    f" start layer: {self.start_layer} end layer: {self.end_layer} ")
             
         if get_pp_group().is_last_rank:
             self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -385,15 +374,7 @@ class LlamaModel(nn.Module):
         self.init_cpu_time = 0
         self.init_cuda_event = torch.cuda.Event(enable_timing=True)
         self.fwd_counts = 0
-    
-    def get_per_decode_layer_bytes(self):
-        module = self.layers[self.start_layer]
         
-        total_bytes = 0
-        for param in module.parameters():
-            total_bytes += param.numel() * param.element_size()
-
-        return total_bytes    
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -432,26 +413,7 @@ class LlamaModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
         
-        input_tokens = hidden_states.shape[0]
-        
-        # trigger the reorganization of modules
-        if (self.smart_offload and self.smart_offload_dynamic and \
-            self.fwd_counts > 0 and self.smart_offload_per_block_time != -1):
-            
-            # reorganize the resident GPU modules
-            cur_per_block_cmp_time = self.smart_offload_per_block_time * input_tokens / self.smart_offload_init_tokens # ms 
-            # k = math.ceil(((self.smart_offload_per_block_size / self.smart_offload_pci_bandwidth) * 1000) / cur_per_block_cmp_time) # *1000 to convert to ms
-            k = math.ceil(self.avg_H2D_transfer_time / cur_per_block_cmp_time) 
-            # logger.debug(f"+++++smart_offload_per_block_size: {self.smart_offload_per_block_size} smart_offload_pci_bandwidth: {self.smart_offload_pci_bandwidth} smart_offload_per_block_time: {self.smart_offload_per_block_time}, k: {k} on PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} fwd_counts: {self.fwd_counts}")
-            k = int(min(max(1, k), (self.end_layer - self.start_layer) / 2 - 1))
-            # see_memory_usage(f"+++++Before reorganize_resident_gpu_modules on PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} fwd_counts: {self.fwd_counts}, GPU memory usage: ", True)
-            t_start = time.time_ns()
-            self.offload_buffer.reorganize_resident_gpu_modules(k)
-            t_end = time.time_ns()
-            # see_memory_usage(f"+++++After reorganize_resident_gpu_modules on PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} fwd_counts: {self.fwd_counts}, k = {k}, reorganize cost {((t_end - t_start) / 1e6):.3f} ms, GPU memory usage: ", True)
-            logger.debug(f"+++++reorganize_resident_gpu_modules on PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} fwd_counts: {self.fwd_counts}, k = {k}, reorganize cost {((t_end - t_start) / 1e6):.3f} ms")
-            
-         
+        input_tokens = hidden_states.shape[0] 
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
             if self.timing_layer_fwd and self.fwd_counts > 0:
@@ -463,7 +425,7 @@ class LlamaModel(nn.Module):
             if self.timing_layer_fwd and self.fwd_counts > 0:
                 # record the end of the layer forward
                 layer_end_events[i - self.start_layer].record()
-            if self.offload_buffer is not None and (i + 1) % self.offload_buffer.get_offload_interval() == 0:
+            if self.offload_buffer is not None and i in self.offload_buffer.initial_offload_layers:
                 # record the the computation event for this layer
                 self.offload_buffer.compute_event.record()
         
@@ -477,33 +439,24 @@ class LlamaModel(nn.Module):
        
         # print the duration of each layer.
         if self.timing_layer_fwd and self.fwd_counts > 0:
-            layer_end_events[-1].synchronize()
-            total_layer_fwd_time = 0 
+            layer_end_events[-1].synchronize() 
             for i in range(self.start_layer, self.end_layer):
                 idx = i - self.start_layer
                 relative_start_time = self.init_cuda_event.elapsed_time(layer_start_events[idx])
                 relative_end_time = self.init_cuda_event.elapsed_time(layer_end_events[idx])
                 layer_fwd_time = layer_start_events[idx].elapsed_time(layer_end_events[idx])
-                total_layer_fwd_time += layer_fwd_time
                 logger.info(f"PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} "
                             f"Layer {i} relative timing info, layer_relative_start: {relative_start_time:.3f} layer_relative_end: {relative_end_time:.3f} "
                             f"layer_fwd_time: {layer_fwd_time:.3f} ms, " 
                             f"fwd_counts: {self.fwd_counts} input_ids_shape: {input_tokens} "
                             f"num_prefill_reqs: {attn_metadata.num_prefills} num_decode_reqs: {attn_metadata.num_decode_tokens}")
         
-            # update the compute time of per decode layer
-            if self.smart_offload and self.smart_offload_dynamic and self.smart_offload_per_block_time == -1:
-                self.smart_offload_per_block_time = total_layer_fwd_time / (self.end_layer - self.start_layer)
-                self.smart_offload_init_tokens = input_tokens
-                logger.debug(f"+++++smart_offload_per_block average compute time: {self.smart_offload_per_block_time} fwd_counts: {self.fwd_counts} input_ids_shape: {input_tokens} ")
-        
-        
         if get_pp_group().is_last_rank and self.timing_layer_fwd and self.fwd_counts > 0:
             cur_timestamp = time.time_ns()
             relative_cpu_end_time = cur_timestamp - self.init_cpu_time
             # print the timestamp of the last rank (GPU time)  --> calculate the total time (lastrank - first ranjk, from log information)
             logger.info(f"[abs_timestamp(ns): {cur_timestamp}] [relative_end(ns): {relative_cpu_end_time:.3f}]"
-                        f" PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} stop forward on the model. fwd_counts: {self.fwd_counts} input_ids_shape: {input_tokens}"
+                        f" PP Rank {get_pp_group().rank} TP Rank {get_tensor_model_parallel_rank()} stop forward on the model. fwd_counts: {self.fwd_counts} input_ids_shape: {input_tokens}"
                         f" num_prefill_reqs: {attn_metadata.num_prefills} num_decode_reqs: {attn_metadata.num_decode_tokens}")
         
         self.fwd_counts += 1
@@ -581,13 +534,6 @@ class LlamaModel(nn.Module):
             for i in range(self.start_layer, self.end_layer):
                 self.layers[i] = self.offload_buffer.maybe_offload(self.layers[i], i, 
                                                                     self.start_layer, self.end_layer)
-            
-            self.avg_H2D_transfer_time = self.offload_buffer.get_avg_H2D_transfer_time()
-        else:
-            H2D_PCIe_bw = 23 # GB/s
-            self.avg_H2D_transfer_time = (self.smart_offload_per_block_size / H2D_PCIe_bw ) * 1000 # ms
-            
-        logger.debug(f"+++++avg_H2D_transfer_time: {self.avg_H2D_transfer_time} on PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()}")
                 
                 
     def record_init_timestamp(self):

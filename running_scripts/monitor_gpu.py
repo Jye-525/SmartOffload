@@ -8,7 +8,7 @@ import os
 pynvml.nvmlInit()
 
 device_id = 0
-csv_file_path = "/home/jieye/viper2/benchmark_mii/perf_results/"
+csv_file_path = "/home/jieye/moe_mix_precision/monitor_cpu/"
 metric_values = []
 
 def monitor_gpu(device_id, csv_file_path):
@@ -53,7 +53,7 @@ def monitor_gpu(device_id, csv_file_path):
                 metric_values.append([device_id, time.time_ns(), throughput_tx, throughput_rx, utilization.gpu, utilization.memory, mem_info.used, mem_info.free])
             # if (utilization.gpu + utilization.memory) > 0:
             #     metric_values.append([device_id, time.time_ns(), utilization.gpu, utilization.memory, mem_info.used, mem_info.free])
-            time.sleep(0.01)  # Adjust the sleep interval as needed
+            time.sleep(1)  # Adjust the sleep interval as needed
     except KeyboardInterrupt:
         print(f"====== Got interrupt in GPU monitoring script {device_id} ======")
         dump_to_csv()

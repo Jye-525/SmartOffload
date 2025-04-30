@@ -154,8 +154,10 @@ class EngineArgs:
     swap_space: float = 4  # GiB
     cpu_offload_method: str = 'default' # default, smart_offload
     cpu_offload_gb: float = 0  # GiB
-    cpu_offload_layers: Optional[List[int]] = None
-    param_offload_target: str = 'all' # choices=['all', 'attn_only', 'mlp_only', 'attn_mlp', 'moe_only', 'attn_moe', 'selective_experts']
+    # cpu_offload_layers: Optional[List[int]] = None
+    smart_offload_dynamic: int = 0 # 0: static offloading interval, 1: dynamic offloading interval
+    smart_offload_interval: Optional[int] = None
+    smart_offload_param_target: str = 'all' # choices=['all', 'attn_only', 'mlp_only', 'attn_mlp', 'moe_only', 'attn_moe', 'selective_experts']
     gpu_memory_utilization: float = 0.90
     max_num_batched_tokens: Optional[int] = None
     max_num_seqs: Optional[int] = None
@@ -526,19 +528,33 @@ class EngineArgs:
             'loaded from CPU memory to GPU memory on the fly in each '
             'model forward pass.')
         # used for the smart_offload method
+        # parser.add_argument(
+        #     '--cpu-offload-layers',
+        #     type=nullable_int_list,
+        #     default=EngineArgs.cpu_offload_layers,
+        #     help='The number of layers to offload to CPU.'
+        # )
         parser.add_argument(
-            '--cpu-offload-layers',
-            type=nullable_int_list,
-            default=EngineArgs.cpu_offload_layers,
-            help='The number of layers to offload to CPU.'
+            '--smart-offload-dynamic',
+            type=int,
+            default=EngineArgs.smart_offload_dynamic,
+            help='Enable dynamic offloading interval for smart offload or not. '
+            'If --smart-offload-dynamic is 0, using static offloading interval configured by user.'
+            'If --smart-offload-dynamic is 1, dynamically adjust offloading interval'
+        )
+        
+        parser.add_argument(
+            '--smart-offload-interval',
+            type=int,
+            default=EngineArgs.smart_offload_interval,
+            help='Offloading interval for smart offload.'
         )
         parser.add_argument(
-            '--param-offload-target',
+            '--smart-offload-param-target',
             type=str,
             choices=['all', 'attn_only', 'mlp_only', 'attn_mlp', 'moe_only', 'attn_moe', 'selective_experts'],
-            default=EngineArgs.param_offload_target,
-            help='Offloading the target parameters from the layers'
-            'specified in --cpu-offload-layers to CPU.'
+            default=EngineArgs.smart_offload_param_target,
+            help='Offloading the target parameters from the offloaded layers'
         )
         parser.add_argument(
             '--gpu-memory-utilization',
@@ -1142,7 +1158,6 @@ class EngineArgs:
                            "has been disabled.")
             self.enable_prefix_caching = False
 
-        logger.debug(f"Creating Cache config: cpu_offload_method={self.cpu_offload_method} cpu_offload_layers={self.cpu_offload_layers}, cpu_offload_gb={self.cpu_offload_gb}, param_offload_target={self.param_offload_target}")
         cache_config = CacheConfig(
             block_size=self.block_size,
             gpu_memory_utilization=self.gpu_memory_utilization,
@@ -1155,8 +1170,9 @@ class EngineArgs:
             cpu_offload_config=CPUOffloadConfig.create_config(
                 offload_method=self.cpu_offload_method,
                 offload_gb=self.cpu_offload_gb,
-                offload_layers=self.cpu_offload_layers,
-                param_offload_target=self.param_offload_target
+                smart_offload_dynamic=self.smart_offload_dynamic,
+                smart_offload_interval=self.smart_offload_interval,
+                smart_offload_param_target=self.smart_offload_param_target
             ), 
             calculate_kv_scales=self.calculate_kv_scales,
         )

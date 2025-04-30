@@ -4,7 +4,7 @@ PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
 
 source $PROJ_PATH/vllm_env_vars_ray
 
-echo "Start running default_online_real.sh ..."
+echo "Start running default_online_real_2.sh ..."
 
 PYTHON_PATH=`which python`
 echo "The current python executable path is $PYTHON_PATH"
@@ -12,29 +12,27 @@ echo "The current python executable path is $PYTHON_PATH"
 EXEC_PATH="$PROJ_PATH/../benchmarks/"
 MODEL_PATH="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
 BASE_DATASET_PATH="/lus/eagle/projects/RECUP/jye/datasets/"
-LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_test_v0_8_4_v3/"
+LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_logs_baseline/"
 
 # Model configurations
 declare -A MODEL_CONFIG=(
     # Format: "TP PP MAX_MODEL_LEN GPU_MEMORY_LIMIT"
-    ["meta-llama/Llama-3.1-8B"]="1 1 32768 0.8"
     ["deepseek-ai/deepseek-coder-33b-base"]="4 1 32768 0.8"
-    ["meta-llama/Llama-3.3-70B-Instruct"]="4 2 32768 0.8" # 0.77 is minimum gpu limit
-    ["alpindale/goliath-120b"]="4 4 4096 0.8" # 0.45 is minimum gpu limit
-    ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.8" # 0.8 is minimum gpu limit 
+    ["meta-llama/Llama-3.3-70B-Instruct"]="4 2 32768 0.8"
+    ["alpindale/goliath-120b"]="4 4 4096 0.8"
+    ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.8"
 )
 
 TESTA_CASES=("prompt-decode") #  "prompt-only" "decode-only"  "prompt-decode"
 NUM_TRIES=1
 # NUM_REQS=(200)
-# NUM_REQS=(500)
+NUM_REQS=(500)
 # NUM_REQS=(10 50 100 150 200)
-# NUM_REQS=(250 300 350 400 450 500)
+# NUM_REQS=(1000 2000 3000 4000 5000 6000 7000 8000)
 #NUM_REQS=(300 350 400)
-NUM_REQS=(200)
 
 # Associative array declaration for different datasets
-SUBTASKS="multi_news" # used for longbench, choices: gov_report, multi_news, lcc (500)
+SUBTASKS="lcc" # used for longbench, choices: gov_report, multi_news, lcc (500)
 declare -A DATASETS=(
     ["longbench"]="--dataset-name longbench --dataset-path ${BASE_DATASET_PATH} --longbench-subtasks \"${SUBTASKS}\""
     ["gsm8k"]="--dataset-name gsm8k --dataset-path ${BASE_DATASET_PATH}"
@@ -50,90 +48,37 @@ declare -A SYNT_DATASETS=(
 )
 
 DATASET_NAME="longbench" # longbench, gsm8k
-MODEL="meta-llama/Llama-3.1-8B"
 # MODEL="deepseek-ai/deepseek-coder-33b-base"
 #MODEL="meta-llama/Llama-3.3-70B-Instruct"
 # MODEL="alpindale/goliath-120b"
-# MODEL="meta-llama/Llama-3.1-405B"
+MODEL="meta-llama/Llama-3.1-405B"
 IFS=' ' read -r TP PP MAX_MODEL_LEN GPU_MEM_LIMIT <<< "${MODEL_CONFIG[$MODEL]}"
 
-OFFLOAD_TYPE=2 # 0 no offloading, 1: vllm naive offloading, 2: smart_offload
-OFFLOAD_DYNAMIC=1 # 0: static offloading, 1: dynamic offloading
-OFFLOAD_LAYER_INTERVAL=16 # used for smart_offload
-OFFLOAG_GB=5 # used for vllm naive offloading
+OFFLOAD_TYPE=0 # 0 no offloading, 1: vllm naive offloading, 2: smart_offload
+OFFLOAD_LAYERS="1,4,7" # used for smart_offload
+OFFLOAG_GB=6 # used for vllm naive offloading
 declare -A OFFLOAD_CONFIG=(
     # Format: "OFFLOAD_TYPE "
     ["1"]="--cpu-offload-method default --cpu-offload-gb ${OFFLOAG_GB}"
-    ["2"]="--cpu-offload-method smart_offload --smart-offload-dynamic ${OFFLOAD_DYNAMIC} --smart-offload-interval ${OFFLOAD_LAYER_INTERVAL} --smart-offload-param-target all"
+    ["2"]="--cpu-offload-method smart_offload --cpu-offload-layers \"${OFFLOAD_LAYERS}\" --param-offload-target all"
 )
 
 
-EXECUTOR_BACKEND="mp" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
+EXECUTOR_BACKEND="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
 #EXEC_MODE="eager" # "eager"
-LOG_STATS_INTER=3 # in seconds
-PREEMP_MODE="recompute" # "recompute" or "swap"
-MAX_NUM_BATCHED_TOKENS=8192 # max number of tokens in a batch, 2048, 4096, 8192, 16384, 32768
-EN_CHUNKED_PREFILL=True # "True" or "False"
-EN_PREFIX_CACHING=False # "True" or "False"
-SCHEDULER_CLS="vllm.v1.core.sched.scheduler.Scheduler" # "vllm.core.scheduler.Scheduler" or "vllm.v1.core.sched.scheduler.Scheduler"
-# SCHEDULER_CLS="vllm.core.scheduler.Scheduler"
-MONITOR="False" # "True" or "False"
-
-VLLM_V0_OR_V1="1" # 0: vllm v0, 1: vllm v1
-echo "VLLM_USE_V1=${VLLM_USE_V1}"
-if [ -z "$VLLM_USE_V1" ] || [ "$VLLM_USE_V1" = "0" ]; then
-   VLLM_V0_OR_V1="0"
-   if [ "$EN_CHUNKED_PREFILL" = "True" ]; then
-        VLLM_V0_OR_V1=${VLLM_V0_OR_V1}"_chunked"  # no offloading for ray executor
-    fi
-elif [ "$VLLM_USE_V1" = "1" ]; then
-   VLLM_V0_OR_V1="1_chunked"
-fi
-
+LOG_STATS_INTER=1 # in seconds
+PREEMP_MODE="swap" # "recompute" or "swap"
 
 MODEL_NAME=$(echo $MODEL | cut -d'/' -f2)
-# LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_offload${OFFLOAD_LAYER_INTERVAL}/"
-LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_v${VLLM_V0_OR_V1}_offload${OFFLOAD_TYPE}_${OFFLOAD_LAYER_INTERVAL}/"
+LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}/"
 SUB_PATH="${DATASET_NAME}"
 if [ ${DATASET_NAME} = "longbench" ]; then
-    SUB_PATH="${SUB_PATH}--${SUBTASKS//,/--}-interleave"
+    SUB_PATH="${SUB_PATH}--${SUBTASKS//,/--}"
 fi
 LOG_PATH="${LOG_PATH}/${SUB_PATH}/"
 [ -d $LOG_PATH ] || mkdir -p $LOG_PATH
 
 ###################################### Related Helper functions #############################################
-start_gpu_monitor() {
-    NRANKS_PER_NODE=1
-    echo "Monitoring starting......"
-    # start gpu monitor & host memory monitor
-    for gpu_id in $(seq 0 $((NRANKS_PER_NODE - 1))); 
-    do
-        setsid python ${PROJ_PATH}/monitor_gpu.py $gpu_id "${LOG_PATH}/monitor-gpu${gpu_id}.csv" &
-        monitor_pid[$gpu_id]=$!
-        echo "Monitoring started for GPU $gpu_id at PID ${monitor_pid[$gpu_id]}, PATH=${LOG_PATH}/monitor-gpu${gpu_id}.csv."
-    done
-    setsid python ${PROJ_PATH}/monitor_host_mem.py "${LOG_PATH}/monitor-vmem.csv" &
-}
-
-stop_gpu_monitor() {
-    NRANKS_PER_NODE=1
-    echo "Monitoring stopping......"
-    # Terminate monitoring for all GPUs and host memory
-    for gpu_id in $(seq 0 $((NRANKS_PER_NODE - 1))); 
-    do
-        echo "Killing the monitoring script for GPU $gpu_id at PID ${monitor_pid[$gpu_id]}."
-        kill -2 ${monitor_pid[$gpu_id]}
-        echo "SIGTERM (kill -2) instructed to monitoring script for GPU $gpu_id."
-        wait ${monitor_pid[$gpu_id]}
-        echo "Killed the monitoring script for GPU $gpu_id."
-    done
-
-    kill -2 $(pgrep -f monitor_host_mem.py)
-    echo "SIGTERM (kill -2) instructed to monitoring script for host memory."
-    wait $(pgrep -f monitor_host_mem.py)
-    echo "Killed the monitoring script for host memory."
-}
-
 ###################################### Start and Stop Ray Clsuter ###########################################
 start_ray_cluster() {
     RAY_SCRIPT="$PROJ_PATH/start_ray_cluster.sh"
@@ -154,10 +99,8 @@ stop_ray_cluster() {
 ###################################### Start and Stop vLLM Server ###########################################
 start_vllm_server() {
     server_log_file=$1
-    trial_id=$2
 
-    vllm_cmd="nohup nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx -o report_llama_w_offload_v0_8_4_eager_dynamic_${trial_id}_interleave_1.nsys-rep --trace-fork-before-exec=true \
-        vllm serve ${MODEL} \
+    vllm_cmd="vllm serve ${MODEL} \
         --download-dir ${MODEL_PATH} \
         --trust-remote-code \
         --enforce-eager \
@@ -165,32 +108,12 @@ start_vllm_server() {
         --tensor-parallel-size ${TP} \
         --pipeline-parallel-size ${PP} \
         --disable-log-requests \
+        --enable-chunked-prefill=False \
         --max-model-len ${MAX_MODEL_LEN} \
         --gpu-memory-utilization ${GPU_MEM_LIMIT} \
         --log-stats-interval ${LOG_STATS_INTER} \
-        --scheduler-cls ${SCHEDULER_CLS} \
+        --preemption-mode ${PREEMP_MODE} \
         --collect-layer-fwd-time "
-
-        
-
-    if [ -z "$VLLM_USE_V1" ] || [ "$VLLM_USE_V1" = "0" ]; then
-        vllm_cmd+=" --preemption-mode ${PREEMP_MODE} --enable-chunked-prefill=${EN_CHUNKED_PREFILL} "
-        if [ "$EN_CHUNKED_PREFILL" = "True" ]; then
-            vllm_cmd+=" --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} "
-        fi
-    elif [ "$VLLM_USE_V1" = "1" ]; then
-        # chunked prefill is always enabled
-        vllm_cmd+=" --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} " 
-    fi
-
-    if [ "$EN_PREFIX_CACHING" = "True" ]; then
-        vllm_cmd+=" --enable-prefix-caching "
-    fi
-
-    if [ "$EN_PREFIX_CACHING" = "False" ]; then
-        vllm_cmd+=" --no-enable-prefix-caching "
-    fi
-
 
     if [ $OFFLOAD_TYPE -ne 0 ]; then
         vllm_cmd+="${OFFLOAD_CONFIG[$OFFLOAD_TYPE]}"
@@ -214,7 +137,7 @@ check_vllm_server_start() {
             return 1
         fi
         # Check for the Uvicorn message
-        if grep -q "INFO:     Waiting for application startup." "$server_log_file"; then
+        if grep -q "INFO:     Uvicorn running on http" "$server_log_file"; then
             echo "vLLM server started successfully!"
             return 0
         fi
@@ -260,8 +183,7 @@ Run_client_bench() {
 
             
     eval "${client_cmd}" > "${client_log_file_name}" 2>&1
-    # sleep 180 # give the server some time to finish the requests
-    sleep 60
+    sleep 180 # give the server some time to finish the requests
 }
 
 ################################################## Run the Client Test ##########################################################
@@ -271,11 +193,11 @@ benchmark_with_real_dataset() {
         echo "Start running with num_req=${num_req} requests using dataset ${DATASET_NAME} ..."
         for try_idx in $(seq 1 $NUM_TRIES); do
             if [ $gen_len -gt 0 ]; then
-                SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_g${gen_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_bt${MAX_NUM_BATCHED_TOKENS}_eager_${try_idx}.log"
-                CLIENT_LOG_FILE_NAME="${LOG_PATH}/client_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_g${gen_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_bt${MAX_NUM_BATCHED_TOKENS}_eager_${try_idx}.log"
+                SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_g${gen_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
+                CLIENT_LOG_FILE_NAME="${LOG_PATH}/client_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_g${gen_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
             else
-                SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_bt${MAX_NUM_BATCHED_TOKENS}_eager_${try_idx}.log"
-                CLIENT_LOG_FILE_NAME="${LOG_PATH}/client_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_bt${MAX_NUM_BATCHED_TOKENS}_eager_${try_idx}.log"
+                SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
+                CLIENT_LOG_FILE_NAME="${LOG_PATH}/client_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
             fi
 
             if [ $EXECUTOR_BACKEND = "ray" ]; then
@@ -285,12 +207,8 @@ benchmark_with_real_dataset() {
                 start_ray_cluster
             fi
 
-            if [ ${MONITOR} = "True" ];then
-                start_gpu_monitor
-            fi
-
             # Start vLLM server
-            start_vllm_server ${SERVER_LOG_FILE_NAME} ${try_idx}
+            start_vllm_server ${SERVER_LOG_FILE_NAME}
             # Check vLLM server status
             check_vllm_server_start ${SERVER_LOG_FILE_NAME}
             if [ $? -ne 0 ]; then
@@ -302,11 +220,6 @@ benchmark_with_real_dataset() {
             # Start the client benchmark
             Run_client_bench "real" ${CLIENT_LOG_FILE_NAME} ${num_req} ${gen_len} 
             sleep 2
-
-            # Stop Monitor
-            if [ ${MONITOR} = "True" ];then
-                stop_gpu_monitor
-            fi
 
             # Stop the vLLM server
             stop_vllm_server

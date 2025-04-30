@@ -215,6 +215,7 @@ class Worker:
                 x for x in warmup_sizes if x not in
                 self.vllm_config.compilation_config.cudagraph_capture_sizes
             ]
+        print(f"Enter v1 compile_or_warm_up_model ..........warmup_sizes = {warmup_sizes}")
         for size in sorted(warmup_sizes, reverse=True):
             logger.info("Compile and warming up model for size %d", size)
             self.model_runner._dummy_run(size)

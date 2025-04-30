@@ -968,7 +968,8 @@ class CPUOffloadConfig:
     """
     method: str
     cpu_offload_gb: float
-    cpu_offload_layers: Optional[List[int]] = None
+    smart_offload_dynamic: bool = False
+    smart_offload_interval: int = 0 # offload 1 layer after every k layers
     param_offload_target: str = "all"
 
     def compute_hash(self) -> str:
@@ -992,9 +993,10 @@ class CPUOffloadConfig:
     @classmethod
     def create_config(
         cls, offload_method: str = "default", 
-        offload_gb: float = 0, 
-        offload_layers: Optional[List[int]] = None,
-        param_offload_target: str = "all"
+        offload_gb: float = 0,
+        smart_offload_dynamic: int = 0, 
+        smart_offload_interval: Optional[int] = None,
+        smart_offload_param_target: str = "all"
     ) -> Optional["CPUOffloadConfig"]:
         """Create a CPUOffloadConfig from the given parameters.
 
@@ -1004,7 +1006,9 @@ class CPUOffloadConfig:
             offload_layers: A list of layer indices to offload to CPU.
             param_offload_target: Which parameters to offload from the given layers.
         """
-        return cls(offload_method, offload_gb, offload_layers, param_offload_target)
+        en_smart_offload_dynamic = True if smart_offload_dynamic == 1 else False
+        smart_offload_interval = smart_offload_interval if smart_offload_interval is not None else 0
+        return cls(offload_method, offload_gb, en_smart_offload_dynamic, smart_offload_interval, smart_offload_param_target)
 
 class CacheConfig:
     """Configuration for the KV cache.
@@ -1087,9 +1091,11 @@ class CacheConfig:
             raise ValueError(
                 "GPU memory utilization must be less than 1.0. Got "
                 f"{self.gpu_memory_utilization}.")
-        if self.cpu_offload_config.cpu_offload_gb > 0 and self.cpu_offload_config.cpu_offload_layers is not None:
+        if ((self.cpu_offload_config.cpu_offload_gb > 0) and \
+            (self.cpu_offload_config.smart_offload_interval is not None \
+                and self.cpu_offload_config.smart_offload_interval > 0)):
             raise ValueError(
-                "--cpu-offload-gb and --cpu-offload-layers can not be set at the same time."
+                "--cpu-offload-gb and --smart-offload-interval can not be set at the same time."
             )
 
     def _verify_cache_dtype(self) -> None:
@@ -2130,7 +2136,8 @@ class LoRAConfig:
     def verify_with_cache_config(self, cache_config: CacheConfig):
         # TODO LoRA supports CPU offload.
         if (cache_config.cpu_offload_config.cpu_offload_gb > 0) or \
-        (cache_config.cpu_offload_config.cpu_offload_layers is not None):
+        (cache_config.cpu_offload_config.smart_offload_interval is not None \
+            and cache_config.cpu_offload_config.smart_offload_interval > 0):
             raise ValueError("CPU offload is not supported with LoRA yet.")
 
     def verify_with_model_config(self, model_config: ModelConfig):
@@ -3259,7 +3266,8 @@ class VllmConfig:
             self.compilation_config.level = CompilationLevel.NO_COMPILATION
             
         if self.cache_config is not None and \
-            self.cache_config.cpu_offload_config.cpu_offload_layers is not None and \
+            self.cache_config.cpu_offload_config.smart_offload_interval is not None and \
+            self.cache_config.cpu_offload_config.smart_offload_interval > 0 and \
             self.compilation_config.level != CompilationLevel.NO_COMPILATION:
             logger.warning(
                 "CPU offload is not supported with `torch.compile` yet."

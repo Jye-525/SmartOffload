@@ -9,7 +9,7 @@
     "dureader": 128,
     "gov_report": 1024,
     "qmsum": 512,
-    "multi_news": 1024,
+    "multi_news": 512,
     "vcsum": 512,
     "trec": 64,
     "triviaqa": 32,

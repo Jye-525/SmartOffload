@@ -35,6 +35,7 @@ from vllm.transformers_utils.tokenizer import AnyTokenizer
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import deprecate_kwargs, weak_bind
 from vllm.inputs.data import DecoderOnlyInputs, ProcessorInputs, TokenInputs
+from vllm.spec_decode.util import nvtx_range
 
 logger = init_logger(__name__)
 ENGINE_ITERATION_TIMEOUT_S = envs.VLLM_ENGINE_ITERATION_TIMEOUT_S
@@ -265,6 +266,7 @@ class _AsyncLLMEngine(LLMEngine):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    @nvtx_range("AsyncLLMEngine.step_async")
     async def step_async(
         self, virtual_engine: int
     ) -> List[Union[RequestOutput, PoolingRequestOutput]]:
@@ -304,7 +306,9 @@ class _AsyncLLMEngine(LLMEngine):
                 per_scheduler_costs = [f"{scheduler.get_num_unfinished_seq_groups()}:{len(scheduler.running)}" for scheduler in self.scheduler]
                 avg_gpu_kv_cache_usage, avg_cpu_kv_cache_usage = self.get_avg_kv_cache_usage()
                 logger.debug(f"Avg KV cache usage of all schedulers during the this forward iteration. "
-                            f"Scheduler id: {virtual_engine} scheduled {len(seq_group_metadata_list)} requests, per_scheduler_costs: {per_scheduler_costs}"
+                            f"Scheduler id: {virtual_engine} scheduled {len(seq_group_metadata_list)} requests "
+                            f"(scheduled_groups={len(scheduler_outputs.scheduled_seq_groups)}, prefill_groups={scheduler_outputs.num_prefill_groups}, total_batched_tokens={scheduler_outputs.num_batched_tokens}, running={scheduler_outputs.running_queue_size}, ignored={scheduler_outputs.ignored_seq_groups}, preempted={scheduler_outputs.preempted}), "
+                            f"per_scheduler_costs: {per_scheduler_costs}"
                             f"GPU KV cache usage: {avg_gpu_kv_cache_usage * 100:.1f}%, CPU KV cache usage: {avg_cpu_kv_cache_usage * 100:.1f}%")
             
             ctx.seq_group_metadata_list = seq_group_metadata_list

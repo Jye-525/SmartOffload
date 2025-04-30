@@ -8,6 +8,7 @@ python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_t
 
 python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model mistralai/Mistral-7B-v0.3  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --cpu-offload-gb 10 > test_Mistral7B_offload_10g.log 2>&1
 
+python /home/jieye/moe_mix_precision/micron_v0.8.4/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model meta-llama/Llama-3.1-8B  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --max-model-len 32768
 
 python /home/jieye/moe_mix_precision/SmartOffload_polaris/benchmarks/benchmark_throughput.py --backend vllm --input-len 128 --output-len 10 --num-prompts 1 --model mistralai/Mistral-7B-v0.3  --download-dir /lus/eagle/projects/RECUP/jye/huggingface-hub/ --trust-remote-code --enforce-eager  --distributed-executor-backend mp --tensor-parallel-size 1 --pipeline-parallel-size 1 --cpu-offload-layers 10 --cpu-offload-type all  > test_Mistral7B_offload_10layers_tp1_1.log 2>&1
 
