@@ -1220,7 +1220,61 @@ class ModelConfig:
         return (hasattr(self.hf_config, "matryoshka_dimensions")
                 or getattr(self.hf_config, "is_matryoshka", False))
 
+@dataclass
+class CPUOffloadConfig:
+    """Configuration for the CPU offload (i.e., model weights offload to CPU).
 
+    Args:
+        method: Method to offload the model weights to CPU (choices: "default", "smart_offload")
+        offload_gb: Size of the CPU offload buffer in GiB. This is for the default approach.
+        # the following parameters are for the smart offload approach.
+        offload_layers: A list of layer indices to offload to CPU.
+        param_offload_target: Which parameters to offload from the given layers.
+    """
+    method: str
+    cpu_offload_gb: float
+    smart_offload_dynamic: bool = False
+    smart_offload_interval: int = 0 # when smart_offload_interval is 0, it means disable smart offload 
+    param_offload_target: str = "all"
+
+    def compute_hash(self) -> str:
+        """
+        WARNING: Whenever a new field is added to this config,
+        ensure that it is included in the factors list if
+        it affects the computation graph.
+
+        Provide a hash that uniquely identifies all the configs
+        that affect the structure of the computation
+        graph from input ids/embeddings to the final hidden states,
+        excluding anything before input ids/embeddings and after
+        the final hidden states.
+        """
+        # no factors to consider.
+        # this config will not affect the computation graph.
+        factors: List[Any] = []
+        hash_str = hashlib.md5(str(factors).encode()).hexdigest()
+        return hash_str
+
+    @classmethod
+    def create_config(
+        cls, offload_method: str = "default", 
+        offload_gb: float = 0,
+        smart_offload_dynamic: int = 0, 
+        smart_offload_interval: Optional[int] = None,
+        smart_offload_param_target: str = "all"
+    ) -> Optional["CPUOffloadConfig"]:
+        """Create a CPUOffloadConfig from the given parameters.
+
+        Args:
+            method: Method to offload the model weights to CPU (choices: "default", "smart_offload")
+            offload_gb: Size of the CPU offload buffer in GiB. This is for the default approach.
+            offload_layers: A list of layer indices to offload to CPU.
+            param_offload_target: Which parameters to offload from the given layers.
+        """
+        en_smart_offload_dynamic = True if smart_offload_dynamic == 1 else False
+        smart_offload_interval = smart_offload_interval if smart_offload_interval is not None else 0
+        return cls(offload_method, offload_gb, en_smart_offload_dynamic, smart_offload_interval, smart_offload_param_target)
+    
 class CacheConfig:
     """Configuration for the KV cache.
 
@@ -1268,7 +1322,8 @@ class CacheConfig:
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         prefix_caching_hash_algo: str = "builtin",
-        cpu_offload_gb: float = 0,
+        # cpu_offload_gb: float = 0,
+        cpu_offload_config: CPUOffloadConfig = CPUOffloadConfig.create_config(),
         calculate_kv_scales: Optional[bool] = None,
     ) -> None:
         self.block_size = block_size
@@ -1280,7 +1335,8 @@ class CacheConfig:
         self.sliding_window = sliding_window
         self.enable_prefix_caching = enable_prefix_caching
         self.prefix_caching_hash_algo = prefix_caching_hash_algo
-        self.cpu_offload_gb = cpu_offload_gb
+        # self.cpu_offload_gb = cpu_offload_gb
+        self.cpu_offload_config = cpu_offload_config
         self.calculate_kv_scales = calculate_kv_scales
         self._verify_args()
         self._verify_cache_dtype()
@@ -1300,9 +1356,15 @@ class CacheConfig:
         return {key: str(value) for key, value in self.__dict__.items()}
 
     def _verify_args(self) -> None:
-        if self.cpu_offload_gb < 0:
+        if self.cpu_offload_config.cpu_offload_gb < 0:
             raise ValueError("CPU offload space must be non-negative"
-                             f", but got {self.cpu_offload_gb}")
+                             f", but got {self.cpu_offload_config.cpu_offload_gb}")
+            
+        if self.cpu_offload_config.cpu_offload_gb > 0 and \
+            self.cpu_offload_config.smart_offload_interval > 0:
+            raise ValueError("CPU offload space and smart-offload-interval cannot be "
+                             "used together. Please set --cpu-offload-gb > 0 when using default offload, "
+                             "and set smart_offload_interval > 0 when using smartoffload.")
 
         if self.gpu_memory_utilization > 1.0:
             raise ValueError(
@@ -1968,6 +2030,18 @@ class SchedulerConfig:
                 f"max_long_partial_prefills ({self.max_long_partial_prefills}) "
                 "must be greater than or equal to 1 and less than or equal to "
                 f"max_num_partial_prefills ({self.max_num_partial_prefills}).")
+            
+        
+        logger.info(
+            "SchedulerConfig: max_num_batched_tokens=%d, "
+            "max_num_seqs=%d, max_model_len=%d, "
+            "max_num_partial_prefills=%d, "
+            "max_long_partial_prefills=%d, "
+            "long_prefill_token_threshold=%d",
+            self.max_num_batched_tokens, self.max_num_seqs,
+            self.max_model_len, self.max_num_partial_prefills,
+            self.max_long_partial_prefills,
+            self.long_prefill_token_threshold)
 
     @property
     def is_multi_step(self) -> bool:
@@ -3542,6 +3616,12 @@ class VllmConfig:
     # tree config registration.
     additional_config: SupportsHash = field(default=None,
                                             init=True)  # type: ignore
+    
+    collect_layer_fwd_time: bool = False
+    collect_attn_mlp_fwd_time: bool = False
+    
+    log_stats_interval: Optional[float] = None
+    
     instance_id: str = ""
 
     def compute_hash(self) -> str:
@@ -3741,7 +3821,7 @@ class VllmConfig:
         self._set_cudagraph_sizes()
 
         if self.cache_config is not None and \
-            self.cache_config.cpu_offload_gb > 0 and \
+            self.cache_config.cpu_offload_config.cpu_offload_gb > 0 and \
             self.compilation_config.level != CompilationLevel.NO_COMPILATION \
                 and not envs.VLLM_USE_V1:
             logger.warning(
@@ -3749,6 +3829,16 @@ class VllmConfig:
                 " Disabling `torch.compile`.")
             self.compilation_config.level = CompilationLevel.NO_COMPILATION
 
+            
+        if self.cache_config is not None and \
+            self.cache_config.cpu_offload_config.method == 'smart_offload' and \
+            self.cache_config.cpu_offload_config.smart_offload_interval > 0 and \
+            self.compilation_config.level != CompilationLevel.NO_COMPILATION:
+            logger.warning(
+                "Smart CPU offload is not supported with `torch.compile` in both v0 and v1 yet."
+                " Disabling `torch.compile`.")
+            self.compilation_config.level = CompilationLevel.NO_COMPILATION
+        
         if ((not envs.VLLM_USE_V1) and self.lora_config is not None
                 and self.compilation_config.level
                 != CompilationLevel.NO_COMPILATION):

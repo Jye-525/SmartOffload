@@ -120,6 +120,11 @@ class EngineCore:
             logger.info("Batch queue is enabled with size %d",
                         self.batch_queue_size)
             self.batch_queue = queue.Queue(self.batch_queue_size)
+        else:
+            logger.info("Batch queue is disabled with size %d",
+                        self.batch_queue_size)
+            
+        self.steps_count = 0
 
     def _initialize_kv_caches(
             self, vllm_config: VllmConfig) -> tuple[int, int, KVCacheConfig]:
@@ -203,7 +208,11 @@ class EngineCore:
                 outputs=[],
                 scheduler_stats=self.scheduler.make_stats(),
             )
+        self.steps_count += 1
         scheduler_output = self.scheduler.schedule()
+        logger.info(f"EngineCore step() scheduled {len(scheduler_output.scheduled_new_reqs)} new requests, "
+                     f"{len(scheduler_output.scheduled_cached_reqs)} cached requests in the the step function, step_id {self.steps_count} "
+                     f",total scheduled tokens {scheduler_output.total_num_scheduled_tokens} ....")
         output = self.model_executor.execute_model(scheduler_output)
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, output)  # type: ignore
@@ -232,7 +241,11 @@ class EngineCore:
         # is not full, schedule a new batch. Note that this is not blocking.
         if (self.scheduler.get_num_unscheduled_requests() > 0
                 and not self.batch_queue.full()):
+            self.steps_count += 1
             scheduler_output = self.scheduler.schedule()
+            logger.debug(f"EngineCore step() scheduled {len(scheduler_output.scheduled_new_reqs)} new requests, "
+                     f"{len(scheduler_output.scheduled_cached_reqs)} cached requests in the step_with_batch_queue function, step_id {self.steps_count} "
+                     f",total scheduled tokens {scheduler_output.total_num_scheduled_tokens} ....")
             if scheduler_output.total_num_scheduled_tokens > 0:
                 future = self.model_executor.execute_model(scheduler_output)
                 self.batch_queue.put_nowait(

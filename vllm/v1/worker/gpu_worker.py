@@ -204,6 +204,7 @@ class Worker(WorkerBase):
         # but users still want to compile for better performance,
         # e.g. for the max-num-batched token size in chunked prefill.
         warmup_sizes = self.vllm_config.compilation_config.compile_sizes.copy()
+        logger.debug(f"Enter v1 compile_or_warm_up_model ..........warmup_sizes = {warmup_sizes}")
         if not self.model_config.enforce_eager:
             warmup_sizes = [
                 x for x in warmup_sizes if x not in

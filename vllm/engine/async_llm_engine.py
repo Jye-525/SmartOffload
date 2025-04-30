@@ -36,6 +36,7 @@ from vllm.sequence import ExecuteModelRequest
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Device, deprecate_kwargs, weak_bind
+from vllm.spec_decode.util import nvtx_range
 
 logger = init_logger(__name__)
 ENGINE_ITERATION_TIMEOUT_S = envs.VLLM_ENGINE_ITERATION_TIMEOUT_S
@@ -266,6 +267,7 @@ class _AsyncLLMEngine(LLMEngine):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    @nvtx_range("AsyncLLMEngine.step_async")
     async def step_async(
         self, virtual_engine: int
     ) -> List[Union[RequestOutput, PoolingRequestOutput]]:
@@ -300,6 +302,9 @@ class _AsyncLLMEngine(LLMEngine):
              allow_async_output_proc
              ) = self.scheduler[virtual_engine].schedule()
 
+            logger.debug(f"Scheduler {virtual_engine} scheduled {len(scheduler_outputs.scheduled_seq_groups)} requests, {scheduler_outputs.num_prefill_groups} prefill requets, "
+                         f"total batched tokens {scheduler_outputs.num_batched_tokens}, num of reqs in the running queue {scheduler_outputs.running_queue_size}, preempted {scheduler_outputs.preempted} reqs")
+            
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
 

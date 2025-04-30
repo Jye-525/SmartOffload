@@ -612,6 +612,28 @@ def make_layers(
         ] + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)])
     return start_layer, end_layer, modules
 
+def smartoffload_make_layers(
+    num_hidden_layers: int,
+    layer_fn: LayerFn,
+    prefix: str,
+    offload_fn
+) -> Tuple[int, int, torch.nn.ModuleList]:
+    """Make a list of layers with the given layer function, taking
+    pipeline parallelism into account.
+    """
+    from vllm.distributed.parallel_state import get_pp_group
+    from vllm.distributed.utils import get_pp_indices
+    start_layer, end_layer = get_pp_indices(num_hidden_layers,
+                                            get_pp_group().rank_in_group,
+                                            get_pp_group().world_size)
+    logger.debug(f"+++++++In pp rank {get_pp_group().rank_in_group},  start_layer: {start_layer}, end_layer: {end_layer}, num_hidden_layers: {num_hidden_layers}")
+    modules = torch.nn.ModuleList(
+            [PPMissingLayer() for _ in range(start_layer)] + [
+                offload_fn(layer_fn(prefix=f"{prefix}.{idx}"), layer_idx=idx, start_layer=start_layer, end_layer=end_layer)
+                for idx in range(start_layer, end_layer)
+            ] + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)])
+        
+    return start_layer, end_layer, modules 
 
 # NOTE: don't use lru_cache here because it can prevent garbage collection
 _model_to_pp_missing_layer_names: Dict[int, List[str]] = {}

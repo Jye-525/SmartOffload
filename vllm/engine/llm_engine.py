@@ -381,10 +381,11 @@ class LLMEngine:
                 from vllm.engine.metrics import (LoggingStatLogger,
                                                  PrometheusStatLogger)
 
+                interval = self.scheduler_config.stat_log_interval if self.scheduler_config.stat_log_interval > 0 else _LOCAL_LOGGING_INTERVAL_SEC 
                 self.stat_loggers = {
                     "logging":
                     LoggingStatLogger(
-                        local_interval=_LOCAL_LOGGING_INTERVAL_SEC,
+                        local_interval=interval,
                         vllm_config=vllm_config),
                     "prometheus":
                     PrometheusStatLogger(
@@ -1373,6 +1374,9 @@ class LLMEngine:
             (seq_group_metadata_list, scheduler_outputs,
              allow_async_output_proc
              ) = self.scheduler[virtual_engine].schedule()
+
+            logger.debug(f"Scheduler {virtual_engine} scheduled {len(scheduler_outputs.scheduled_seq_groups)} requests, {scheduler_outputs.num_prefill_groups} prefill requets, "
+                         f"total batched tokens {scheduler_outputs.num_batched_tokens}, num of reqs in the running queue {scheduler_outputs.running_queue_size}, preempted {scheduler_outputs.preempted} reqs")
 
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs

@@ -94,6 +94,9 @@ class LLMEngine:
             executor_class=executor_class,
             log_stats=False,  # FIXME: implement
         )
+        
+        logger.debug(f"llm_engine in v1 folder is initialized. multiprocess_mode = {multiprocess_mode}, "
+                     f"PP={vllm_config.parallel_config.pipeline_parallel_size}")
 
         if not multiprocess_mode:
             # for v0 compatibility
@@ -215,6 +218,7 @@ class LLMEngine:
 
         if self.should_execute_dummy_batch:
             self.should_execute_dummy_batch = False
+            print("LLMEngine V1 Executing dummy batch in step ..... ")
             self.engine_core.execute_dummy_batch()
             return []
 

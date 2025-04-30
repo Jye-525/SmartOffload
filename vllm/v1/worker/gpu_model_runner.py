@@ -44,6 +44,8 @@ from vllm.v1.utils import bind_kv_cache
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 
+from vllm.spec_decode.util import nvtx_range
+
 from .utils import (gather_mm_placeholders, sanity_check_mm_encoder_outputs,
                     scatter_mm_placeholders)
 
@@ -987,6 +989,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         )
 
     @torch.inference_mode()
+    @nvtx_range("V1_GPUModelRunner.execute_model")
     def execute_model(
         self,
         scheduler_output: "SchedulerOutput",
@@ -1446,6 +1449,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 )
 
         logit_indices = np.cumsum(num_scheduled_tokens) - 1
+        logger.debug(f"Execute a __dummy_run with {num_tokens} tokens")
         return hidden_states[logit_indices]
 
     @torch.inference_mode()
@@ -1588,6 +1592,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # Cache the dummy encoder outputs.
             self.encoder_cache["tmp"] = dict(enumerate(dummy_encoder_outputs))
 
+        logger.debug(f"GPUModelRunner Profile run with {self.max_num_tokens} tokens using _dummy_run()")
         hidden_states = self._dummy_run(self.max_num_tokens)
         if get_pp_group().is_last_rank:
             sampler_output = self._dummy_sampler_run(hidden_states)

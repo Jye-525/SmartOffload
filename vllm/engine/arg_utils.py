@@ -19,7 +19,7 @@ from vllm.config import (CacheConfig, CompilationConfig, ConfigFormat,
                          ModelConfig, ModelImpl, ObservabilityConfig,
                          ParallelConfig, PoolerConfig, PromptAdapterConfig,
                          SchedulerConfig, SpeculativeConfig, TaskOption,
-                         TokenizerPoolConfig, VllmConfig, get_attr_docs)
+                         TokenizerPoolConfig, VllmConfig, get_attr_docs, CPUOffloadConfig)
 from vllm.executor.executor_base import ExecutorBase
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
@@ -127,7 +127,11 @@ class EngineArgs:
     disable_cascade_attn: bool = False
     use_v2_block_manager: bool = True
     swap_space: float = 4  # GiB
+    cpu_offload_method: str = 'default' # default, smart_offload
     cpu_offload_gb: float = 0  # GiB
+    smart_offload_dynamic: int = 0 # 0: static offloading interval, 1: dynamic offloading interval
+    smart_offload_interval: Optional[int] = None
+    smart_offload_param_target: str = 'all' # choices=['all', 'attn_only', 'mlp_only', 'attn_mlp', 'moe_only', 'attn_moe', 'selective_experts']
     gpu_memory_utilization: float = 0.90
     max_num_batched_tokens: Optional[int] = None
     max_num_partial_prefills: Optional[int] = 1
@@ -216,6 +220,11 @@ class EngineArgs:
     enable_reasoning: Optional[bool] = None
     reasoning_parser: Optional[str] = None
     use_tqdm_on_load: bool = LoadConfig.use_tqdm_on_load
+    
+    collect_layer_fwd_time: bool = False
+    collect_attn_mlp_fwd_time: bool = False
+    
+    log_stats_interval: Optional[float] = None
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -520,6 +529,15 @@ class EngineArgs:
                             default=EngineArgs.swap_space,
                             help='CPU swap space size (GiB) per GPU.')
         parser.add_argument(
+            '--cpu-offload-method',
+            type=str,
+            choices=['default', 'smart_offload'],
+            default=EngineArgs.cpu_offload_method,
+            help='The method to offload parameters to CPU. '
+            'The default method is to offloading based on --cpu-offload-gb '
+            'from the first transformer block.'
+        )
+        parser.add_argument(
             '--cpu-offload-gb',
             type=float,
             default=0,
@@ -533,6 +551,28 @@ class EngineArgs:
             'requires fast CPU-GPU interconnect, as part of the model is '
             'loaded from CPU memory to GPU memory on the fly in each '
             'model forward pass.')
+        parser.add_argument(
+            '--smart-offload-dynamic',
+            type=int,
+            default=EngineArgs.smart_offload_dynamic,
+            help='Enable dynamic offloading interval for smart offload or not. '
+            'If --smart-offload-dynamic is 0, using static offloading interval configured by user.'
+            'If --smart-offload-dynamic is 1, dynamically adjust offloading interval'
+        )
+        parser.add_argument(
+            '--smart-offload-interval',
+            type=int,
+            default=EngineArgs.smart_offload_interval,
+            help='Offloading interval for smart offload.'
+        )
+        parser.add_argument(
+            '--smart-offload-param-target',
+            type=str,
+            choices=['all', 'attn_only', 'mlp_only', 'attn_mlp', 'moe_only', 'attn_moe', 'selective_experts'],
+            default=EngineArgs.smart_offload_param_target,
+            help='Offloading the target parameters from the offloaded layers'
+        )
+        
         parser.add_argument(
             '--gpu-memory-utilization',
             type=float,
@@ -1016,6 +1056,24 @@ class EngineArgs:
             "image tokens IIIIIIIIII) where only some image tokens can be "
             "scheduled (like TTTTIIIII, leaving IIIII), it will be scheduled "
             "as TTTT in one step and IIIIIIIIII in the next.")
+        
+        parser.add_argument(
+            '--collect-layer-fwd-time',
+            action='store_true',
+            help='If collecting transformer layer forward time in logs. This is useful '
+            'for performance analysis.')
+        
+        parser.add_argument(
+            '--collect-attn-mlp-fwd-time',
+            action='store_true',
+            help='If collecting the attention and mlp module time in each transformer layer in logs.' 
+            'This is useful for performance analysis. If set, --collect-layer-fwd-time must be set too.')
+        
+        parser.add_argument(
+            '--log-stats-interval',
+            type=float,
+            default=EngineArgs.log_stats_interval,
+            help='If set, the engine will log statistics every x seconds.')
 
         return parser
 
@@ -1188,7 +1246,13 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             prefix_caching_hash_algo=self.prefix_caching_hash_algo,
-            cpu_offload_gb=self.cpu_offload_gb,
+            cpu_offload_config=CPUOffloadConfig.create_config(
+                offload_method=self.cpu_offload_method,
+                offload_gb=self.cpu_offload_gb,
+                smart_offload_dynamic=self.smart_offload_dynamic,
+                smart_offload_interval=self.smart_offload_interval,
+                smart_offload_param_target=self.smart_offload_param_target
+            ),
             calculate_kv_scales=self.calculate_kv_scales,
         )
 
@@ -1347,6 +1411,9 @@ class EngineArgs:
             compilation_config=self.compilation_config,
             kv_transfer_config=self.kv_transfer_config,
             additional_config=self.additional_config,
+            collect_layer_fwd_time=self.collect_layer_fwd_time,
+            collect_attn_mlp_fwd_time = self.collect_attn_mlp_fwd_time,
+            log_stats_interval=self.log_stats_interval
         )
 
         return config
