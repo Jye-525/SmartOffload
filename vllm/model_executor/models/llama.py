@@ -52,6 +52,7 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
+from vllm.spec_decode.util import nvtx_range
 
 
 class LlamaMLP(nn.Module):
@@ -264,6 +265,7 @@ class LlamaDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
 
+    @nvtx_range("decoder.forward")
     def forward(
         self,
         positions: torch.Tensor,
@@ -340,6 +342,7 @@ class LlamaModel(nn.Module):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
+    @nvtx_range("llama_model.forward")
     def forward(
         self,
         input_ids: Optional[torch.Tensor],

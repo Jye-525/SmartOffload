@@ -9,12 +9,13 @@ from typing import (TYPE_CHECKING, Any, Callable, Generic, Optional, TypeVar,
                     Union, overload)
 
 import torch
-
+import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.usage.usage_lib import (UsageContext, is_usage_stats_enabled,
                                   usage_message)
 from vllm.utils import get_mp_context, kill_process_tree
+from vllm.model_executor.smart_offloader import SmartBufferManager
 
 if TYPE_CHECKING:
     from vllm.attention.layer import Attention
@@ -175,8 +176,16 @@ def bind_kv_cache(
     index2name = defaultdict(list)
     for layer_name in kv_caches:
         index2name[extract_layer_index(layer_name)].append(layer_name)
+    runner_kv_caches = [None]*len(index2name)
 
-    for layer_index in sorted(index2name.keys()):
+    buffer_manager = None
+    if envs.VLLM_USE_SMART_OFFLOADING:
+        buffer_manager = SmartBufferManager.get_instance()
+        if buffer_manager is None:
+            raise RuntimeError("Failed to get SmartBufferManager instance. Model should be initied before KV cache binding.")
+        buffer_manager.set_kv_holders(runner_kv_caches, forward_context)
+
+    for idx, layer_index in enumerate(sorted(index2name.keys())):
         layer_names = index2name[layer_index]
         if len(layer_names) > 1:
             # One typical case is encoder-decoder model, e.g., bart.
@@ -184,12 +193,17 @@ def bind_kv_cache(
             # has different layer_name but the same layer_index.
             raise NotImplementedError
         layer_name = layer_names[0]
-        runner_kv_caches.append(kv_caches[layer_name])
+        if buffer_manager is not None:
+            buffer_manager.add_kv_tensor(kv_caches[layer_name], (layer_index, idx, layer_name))
+            # The above line will move the KV cache from GPU to the CPU.
+        else:
+            runner_kv_caches[idx] = kv_caches[layer_name]
+            forward_context[layer_name].kv_cache = [kv_caches[layer_name]]
 
-    # Bind kv_caches to forward context
-    for layer_name, kv_cache in kv_caches.items():
-        # NOTE: Use list because of v0 PP virtual engine.
-        forward_context[layer_name].kv_cache = [kv_cache]
+    # # Bind kv_caches to forward context
+    # for layer_name, kv_cache in kv_caches.items():
+    #     # NOTE: Use list because of v0 PP virtual engine.
+    #     forward_context[layer_name].kv_cache = [kv_cache]
 
 
 def copy_slice(from_tensor: torch.Tensor, to_tensor: torch.Tensor,

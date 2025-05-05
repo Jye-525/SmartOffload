@@ -5,6 +5,7 @@ from vllm.model_executor.parameter import (BasevLLMParameter,
 from vllm.model_executor.sampling_metadata import (SamplingMetadata,
                                                    SamplingMetadataCache)
 from vllm.model_executor.utils import set_random_seed
+from vllm.model_executor.smart_offloader import SmartBufferManager
 
 __all__ = [
     "SamplingMetadata",
@@ -12,4 +13,5 @@ __all__ = [
     "set_random_seed",
     "BasevLLMParameter",
     "PackedvLLMParameter",
+    "SmartBufferManager",
 ]

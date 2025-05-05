@@ -110,6 +110,8 @@ if TYPE_CHECKING:
     VLLM_USE_DEEP_GEMM: bool = False
     VLLM_XGRAMMAR_CACHE_MB: int = 0
     VLLM_MSGPACK_ZERO_COPY_THRESHOLD: int = 256
+    VLLM_USE_SMART_OFFLOADING: bool = False
+    VLLM_USE_SMART_OFFLOADING_K: int = 1e4
 
 
 def get_default_cache_root():
@@ -727,6 +729,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # limit will actually be zero-copy decoded.
     "VLLM_MSGPACK_ZERO_COPY_THRESHOLD":
     lambda: int(os.getenv("VLLM_MSGPACK_ZERO_COPY_THRESHOLD", "256")),
+
+
+    # Enable/disable the smart-offloading approach.
+    "VLLM_USE_SMART_OFFLOADING": lambda: os.environ.get("VLLM_USE_SMART_OFFLOADING", "0") == "1",
+
+    "VLLM_USE_SMART_OFFLOADING_K": lambda: int(os.environ.get("VLLM_USE_SMART_OFFLOADING_K", "1e4")),
 }
 
 # end-env-vars-definition

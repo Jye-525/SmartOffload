@@ -1355,6 +1355,9 @@ class CacheConfig:
     num_cpu_blocks: Optional[int] = field(default=None, init=False)
     """The number of blocks to allocate for CPU memory."""
 
+    smart_buffer_management: bool = False
+    """Enable Smart Buffer Management (SBM) for the KV cache and Transformer offloading to CPU."""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,

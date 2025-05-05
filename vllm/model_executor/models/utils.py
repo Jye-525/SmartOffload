@@ -18,6 +18,8 @@ from vllm.multimodal import MultiModalPlaceholderMap, NestedTensors
 from vllm.sequence import IntermediateTensors
 from vllm.utils import (get_cuda_view_from_cpu_tensor, is_pin_memory_available,
                         is_uva_available)
+from vllm.model_executor.smart_offloader import SmartBufferManager
+from vllm.spec_decode.util import nvtx_range
 
 logger = init_logger(__name__)
 
@@ -520,7 +522,7 @@ def set_cpu_offload_max_bytes(max_bytes: int) -> None:
     _CPU_OFFLOAD_MAX_BYTES = max_bytes
 
 
-def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
+def maybe_offload_to_cpu(module: torch.nn.Module, layer_id: int, buffer_manager = None) -> torch.nn.Module:   
     if (params := next(module.parameters(), None)) is None:
         return module
 
@@ -530,7 +532,7 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
         return module
 
     global _CPU_OFFLOAD_MAX_BYTES, _CPU_OFFLOAD_BYTES
-    if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES:
+    if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES and buffer_manager is None:
         return module
 
     pin_memory = is_pin_memory_available()
@@ -546,7 +548,14 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
     # offload parameters to CPU
     # use pin_memory if possible, which helps cudagraph capture speed
     offloaded_parameters = False
-    for p in module.parameters():
+
+    if buffer_manager:
+        buffer_manager.register_module(layer_id, module)
+    for name, p in module.named_parameters():
+        if buffer_manager:
+            buffer_manager.add_tensor(layer_id, name, p)
+            continue
+
         if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES:
             # we use per-parameter offloading
             # one module might have some parameters offloaded and some not
@@ -569,9 +578,32 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
         _CPU_OFFLOAD_BYTES += p.data.numel() * p.data.element_size()
         offloaded_parameters = True
 
-    if offloaded_parameters and not uva_offloading:
+    if buffer_manager:
         original_forward = module.forward
-
+        @nvtx_range(f"smart_offload.forward {layer_id}")
+        def forward(*args, **kwargs):
+            module.forward = original_forward
+            with torch.cuda.stream(buffer_manager.compute_stream):
+                buffer_manager.begin_compute(layer_id)
+                device_state = {}
+                problematic = []
+                for k, v in module.state_dict().items():
+                    if v.device != device:
+                        problematic.append((k, v.device))
+                if problematic:
+                    raise Exception(f"Error with problematic transfers: {layer_id}: {problematic}")
+                output = functional_call(module,
+                                        device_state,
+                                        args=args,
+                                        kwargs=kwargs)
+                # output = module(*args, **kwargs)
+                buffer_manager.end_compute(layer_id)
+            module.forward = forward
+            return output
+        module.forward = forward
+    elif offloaded_parameters and not uva_offloading:
+        original_forward = module.forward
+        @nvtx_range(f"maybe_offload.forward {layer_id}")
         def forward(*args, **kwargs):
             module.forward = original_forward
             device_state = {
@@ -605,11 +637,18 @@ def make_layers(
     start_layer, end_layer = get_pp_indices(num_hidden_layers,
                                             get_pp_group().rank_in_group,
                                             get_pp_group().world_size)
+
+    buffer_manager = None
+    if envs.VLLM_USE_SMART_OFFLOADING:
+        buffer_manager = SmartBufferManager(start_layer, end_layer, k=int(envs.VLLM_USE_SMART_OFFLOADING_K))
+        print(f"****** We have a buffer_manager for layer {start_layer} to {end_layer} ******")
+    
+    my_layers = []
+    for idx in range(start_layer, end_layer):
+        curr_layer = maybe_offload_to_cpu(layer_fn(prefix=f"{prefix}.{idx}"), idx, buffer_manager)
+        my_layers.append(curr_layer)    
     modules = torch.nn.ModuleList(
-        [PPMissingLayer() for _ in range(start_layer)] + [
-            maybe_offload_to_cpu(layer_fn(prefix=f"{prefix}.{idx}"))
-            for idx in range(start_layer, end_layer)
-        ] + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)])
+        [PPMissingLayer() for _ in range(start_layer)] + my_layers + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)])
     return start_layer, end_layer, modules
 
 
