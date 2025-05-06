@@ -438,9 +438,9 @@ class LlamaModel(nn.Module):
             t_start = time.time_ns()
             self.offload_buffer.reorganize_resident_gpu_modules(k)
             t_end = time.time_ns()
-            logger.debug(f"+++++reorganize_resident_gpu_modules on PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} fwd_counts: {self.fwd_counts}, k = {k}, reorganize cost {((t_end - t_start) / 1e6):.3f} ms."
+            logger.info(f"PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} fwd_counts: {self.fwd_counts} reorganize the modules, k = {k}, reorganize cost {((t_end - t_start) / 1e6):.3f} ms "
                          f"per_block_cmp_time: {cur_per_block_cmp_time} ms (init_per_block_time = {self.smart_offload_per_block_time}, input_tokens = {input_tokens} ), init_tokens = {self.smart_offload_init_tokens}), "
-                         f"avg_H2D_transfer_time: {self.avg_H2D_transfer_time} ms, ")
+                         f"avg_H2D_transfer_time: {self.avg_H2D_transfer_time} ms")
         
         
         for layer in self.layers[self.start_layer:self.end_layer]:
@@ -486,7 +486,7 @@ class LlamaModel(nn.Module):
             if self.smart_offload and self.smart_offload_dynamic and self.smart_offload_per_block_time == -1:
                 self.smart_offload_per_block_time = total_layer_fwd_time / (self.end_layer - self.start_layer)
                 self.smart_offload_init_tokens = input_tokens
-                logger.debug(f"+++++smart_offload_per_block average compute time: {self.smart_offload_per_block_time} fwd_counts: {self.fwd_counts} num_input_tokens: {input_tokens} ")
+                logger.info(f"+++++smart_offload_per_block average compute time: {self.smart_offload_per_block_time} fwd_counts: {self.fwd_counts} num_input_tokens: {input_tokens} ")
         
         
         if is_dummy_run == False and get_pp_group().is_last_rank and self.timing_layer_fwd:
@@ -582,7 +582,7 @@ class LlamaModel(nn.Module):
             H2D_PCIe_bw = 23 # GB/s
             self.avg_H2D_transfer_time = (self.smart_offload_per_block_size / H2D_PCIe_bw ) * 1000 # ms
             
-        logger.debug(f"+++++avg_H2D_transfer_time: {self.avg_H2D_transfer_time} on PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()}")
+        # logger.debug(f"+++++avg_H2D_transfer_time: {self.avg_H2D_transfer_time} on PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()}")
               
     def record_init_timestamp(self):
         self.init_cpu_time = time.time_ns()
@@ -681,7 +681,7 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         get_world_group().barrier()
         # Step 2: call self.model to record the initial timestamp
         self.model.record_init_timestamp()
-        logger.debug(f"PP Rank {get_pp_group().rank_in_group}/{get_pp_group().rank} "
+        logger.info(f"PP Rank {get_pp_group().rank_in_group}/{get_pp_group().rank} "
                      f"TP Rank {get_tensor_model_parallel_rank()} "
                      f"WORLD RANK {get_world_group().local_rank}/{get_world_group().rank} the gpu device is {current_device}")
 

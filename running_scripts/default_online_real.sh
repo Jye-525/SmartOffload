@@ -12,7 +12,7 @@ echo "The current python executable path is $PYTHON_PATH"
 EXEC_PATH="$PROJ_PATH/../benchmarks/"
 MODEL_PATH="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
 BASE_DATASET_PATH="/lus/eagle/projects/RECUP/jye/datasets/"
-LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_test_v0_8_4_v3/"
+LOG_BASE_PATH="${HOME}/moe_mix_precision/SC25_venilla_v0_8_4/"
 
 # Model configurations
 declare -A MODEL_CONFIG=(
@@ -42,7 +42,7 @@ declare -A DATASETS=(
 )
 
 # Associative array declaration for synthetic datasets
-INPUT_LENS=(8191)
+INPUT_LENS=(8192)
 OUT_LENS=(1) 
 declare -A SYNT_DATASETS=(
     ["random"]="--dataset-name random --random-input-len __INPUT_LEN__ --random-output-len __OUT_LEN__ --random-range-ratio 1.0"
@@ -57,7 +57,7 @@ MODEL="meta-llama/Llama-3.1-8B"
 # MODEL="meta-llama/Llama-3.1-405B"
 IFS=' ' read -r TP PP MAX_MODEL_LEN GPU_MEM_LIMIT <<< "${MODEL_CONFIG[$MODEL]}"
 
-OFFLOAD_TYPE=2 # 0 no offloading, 1: vllm naive offloading, 2: smart_offload
+OFFLOAD_TYPE=0 # 0 no offloading, 1: vllm naive offloading, 2: smart_offload
 OFFLOAD_DYNAMIC=1 # 0: static offloading, 1: dynamic offloading
 OFFLOAD_LAYER_INTERVAL=16 # used for smart_offload
 OFFLOAG_GB=5 # used for vllm naive offloading
@@ -68,11 +68,11 @@ declare -A OFFLOAD_CONFIG=(
 )
 
 
-EXECUTOR_BACKEND="mp" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
+EXECUTOR_BACKEND="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
 #EXEC_MODE="eager" # "eager"
-LOG_STATS_INTER=3 # in seconds
+LOG_STATS_INTER=5 # in seconds
 PREEMP_MODE="recompute" # "recompute" or "swap"
-MAX_NUM_BATCHED_TOKENS=8192 # max number of tokens in a batch, 2048, 4096, 8192, 16384, 32768
+MAX_NUM_BATCHED_TOKENS=8192 # max number of tokens in a batch, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
 EN_CHUNKED_PREFILL=True # "True" or "False"
 EN_PREFIX_CACHING=False # "True" or "False"
 SCHEDULER_CLS="vllm.v1.core.sched.scheduler.Scheduler" # "vllm.core.scheduler.Scheduler" or "vllm.v1.core.sched.scheduler.Scheduler"
@@ -93,10 +93,17 @@ fi
 
 MODEL_NAME=$(echo $MODEL | cut -d'/' -f2)
 # LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_offload${OFFLOAD_LAYER_INTERVAL}/"
-LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_v${VLLM_V0_OR_V1}_offload${OFFLOAD_TYPE}_${OFFLOAD_LAYER_INTERVAL}/"
+if [ $OFFLOAD_TYPE -eq 2 ]; then
+    LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_v${VLLM_V0_OR_V1}_offload${OFFLOAD_TYPE}_dyn${OFFLOAD_DYNAMIC}_inter${OFFLOAD_LAYER_INTERVAL}/"
+elif [ $OFFLOAD_TYPE -eq 1 ]; then 
+    LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_v${VLLM_V0_OR_V1}_offload${OFFLOAD_TYPE}_size${OFFLOAG_GB}/"
+else
+    LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_v${VLLM_V0_OR_V1}_offload${OFFLOAD_TYPE}/"
+fi
+
 SUB_PATH="${DATASET_NAME}"
 if [ ${DATASET_NAME} = "longbench" ]; then
-    SUB_PATH="${SUB_PATH}--${SUBTASKS//,/--}-interleave"
+    SUB_PATH="${SUB_PATH}--${SUBTASKS//,/--}"
 fi
 LOG_PATH="${LOG_PATH}/${SUB_PATH}/"
 [ -d $LOG_PATH ] || mkdir -p $LOG_PATH
@@ -156,8 +163,8 @@ start_vllm_server() {
     server_log_file=$1
     trial_id=$2
 
-    vllm_cmd="nohup nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx -o report_llama_w_offload_v0_8_4_eager_dynamic_${trial_id}_interleave_1.nsys-rep --trace-fork-before-exec=true \
-        vllm serve ${MODEL} \
+    # vllm_cmd="nohup nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx -o report_llama_w_offload_v0_8_4_eager_dynamic_${trial_id}_interleave_1.nsys-rep --trace-fork-before-exec=true \
+      vllm_cmd="vllm serve ${MODEL} \
         --download-dir ${MODEL_PATH} \
         --trust-remote-code \
         --enforce-eager \

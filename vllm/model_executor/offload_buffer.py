@@ -281,10 +281,15 @@ class OffloadBuffer:
         self.wraper_forwards = []
         self.total_offloaded_layers = 0
         self.first_fwd_after_reorganize = True
-        print(f"+++++++++++ init OffloadBuffer with k={k}, param_offload_target={param_offload_target}")
+        logger.info(f"Initialize the OffloadBuffer with k={k}, param_offload_target={param_offload_target}")
         
         
     def create_module(self, module: torch.nn.Module, layer_idx: int, start_layer: int, end_layer: int):
+        if module.layer_idx == 0 or module.layer_idx == 1:
+            # incase two layers has different parameters
+            for name, param in module.named_parameters():
+                logger.info(f"Load layer {module.layer_idx} param {name} with shape {param.shape}")
+        
         # get the original device of the module
         self.device = next(module.parameters()).device 
         if self.device == torch.device("cpu"):
@@ -339,7 +344,7 @@ class OffloadBuffer:
             load_module_time = (tt_end - tt_start) / 1e6
             # self.H2D_transfer_times.append(load_module_time)
             
-        logger.debug(f"OffloadBuffer.maybe_offload: load layer_idx={layer_idx} cost {load_module_time:.3f} ms")
+        logger.info(f"OffloadBuffer.maybe_offload: load layer_idx={layer_idx} cost {load_module_time:.3f} ms")
         return module
     
     
@@ -413,7 +418,7 @@ class OffloadBuffer:
         #              f"total_offloaded_layers={self.total_offloaded_layers},"
         #              f"aaa cost = {((t_start_aaa - t_start) / 1e6):.3f} ms")
         
-        logger.debug(f"Reorganizing the resident GPU modules from stride of {old_k_value} stride size of {self.curr_k_value}")
+        logger.info(f"Reorganizing the resident GPU modules from stride of {old_k_value} stride size of {self.curr_k_value}")
 
     def get_offload_interval(self):
         return self.curr_k_value

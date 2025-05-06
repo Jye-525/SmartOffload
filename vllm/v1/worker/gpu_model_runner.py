@@ -78,8 +78,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.observability_config = vllm_config.observability_config
 
         from vllm.model_executor.models.utils import set_cpu_offload_max_bytes
-        set_cpu_offload_max_bytes(
-            int(self.cache_config.cpu_offload_gb * 1024**3))
+        if self.cache_config.cpu_offload_config.method == "default":
+            set_cpu_offload_max_bytes(
+                int(self.cache_config.cpu_offload_config.cpu_offload_gb * 1024**3))
+        else:
+            # smart_offload case
+            set_cpu_offload_max_bytes(0)
 
         model_config = self.model_config
         cache_config = self.cache_config

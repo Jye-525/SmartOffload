@@ -631,7 +631,8 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
 
     num_tokens = num_blocks * vllm_config.cache_config.block_size
     num_tokens_str = f"{num_tokens:,}"
-    logger.info("GPU KV cache size: %s tokens", num_tokens_str)
+    # logger.info("GPU KV cache size: %s tokens", num_tokens_str)
+    logger.info(f"GPU KV cache size: {num_tokens_str} tokens, {num_blocks} blocks, max available memory: {available_memory / GiB_bytes:.2f} GiB, page size: {page_size / GiB_bytes:.2f} GiB")
     max_model_len_str = f"{vllm_config.model_config.max_model_len:,}"
     max_concurrency = num_tokens / vllm_config.model_config.max_model_len
     logger.info("Maximum concurrency for %s tokens per request: %.2fx",

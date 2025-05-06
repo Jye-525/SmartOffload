@@ -165,8 +165,10 @@ class EngineCore:
         self.model_executor.initialize_from_config(kv_cache_configs)
 
         elapsed = time.time() - start
-        logger.info(("init engine (profile, create kv cache, "
-                     "warmup model) took %.2f seconds"), elapsed)
+        # logger.info(("init engine (profile, create kv cache, "
+        #              "warmup model) took %.2f seconds"), elapsed)
+        logger.info(f"init engine (profile, create kv cache, "
+                    f"warmup model) took {elapsed:.2f} seconds, #GPU blocks {num_gpu_blocks}") 
         return num_gpu_blocks, num_cpu_blocks, scheduler_kv_cache_config
 
     def add_request(self, request: EngineCoreRequest):
@@ -212,11 +214,21 @@ class EngineCore:
         scheduler_output = self.scheduler.schedule()
         logger.info(f"EngineCore step() scheduled {len(scheduler_output.scheduled_new_reqs)} new requests, "
                      f"{len(scheduler_output.scheduled_cached_reqs)} cached requests in the the step function, step_id {self.steps_count} "
-                     f",total scheduled tokens {scheduler_output.total_num_scheduled_tokens} ....")
+                     f",total scheduled tokens {scheduler_output.total_num_scheduled_tokens}, KV cache utilization {self.scheduler.make_stats().gpu_cache_usage * 100:.2f}%")
         output = self.model_executor.execute_model(scheduler_output)
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, output)  # type: ignore
 
+        if engine_core_outputs is not None:
+            logger.info(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+                        f"Scheduler stats: {engine_core_outputs.scheduler_stats.num_running_reqs} running requests, "
+                        f"{engine_core_outputs.scheduler_stats.num_waiting_reqs} waiting requests, "
+                        f"{engine_core_outputs.scheduler_stats.gpu_cache_usage * 100:.2f}% GPU cache usage. "
+                        )
+        else:
+            logger.error(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+                         f"with no output.")
+        
         return engine_core_outputs
 
     def step_with_batch_queue(self) -> Optional[EngineCoreOutputs]:
@@ -263,6 +275,16 @@ class EngineCore:
             self.batch_queue.task_done()
             engine_core_outputs = self.scheduler.update_from_output(
                 scheduler_output, model_output)
+            
+            if engine_core_outputs is not None:
+                logger.debug(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+                            f"Scheduler stats: {engine_core_outputs.scheduler_stats.num_running_reqs} running requests, "
+                            f"{engine_core_outputs.scheduler_stats.num_waiting_reqs} waiting requests, "
+                            f"{engine_core_outputs.scheduler_stats.gpu_cache_usage * 100:.2f}% GPU cache usage. "
+                            )
+            else:
+                logger.error(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+                            f"with no output.")
 
         return engine_core_outputs
 

@@ -153,7 +153,7 @@ class AutoWeightsLoader:
                                     default_weight_loader)
             weight_loader(param, weight_data)
 
-            logger.debug("Loaded weight %s with shape %s", weight_qualname,
+            logger.info("Loaded weight %s with shape %s", weight_qualname,
                          param.shape)
 
             yield weight_qualname
@@ -524,6 +524,10 @@ def maybe_offload_to_cpu(module: torch.nn.Module) -> torch.nn.Module:
     if (params := next(module.parameters(), None)) is None:
         return module
 
+    if module.layer_idx == 0 or module.layer_idx == 1:
+        for name, param in module.named_parameters():
+            logger.info(f"Load layer {module.layer_idx} param {name} with shape {param.shape}")
+    
     device = params.device
 
     if device == torch.device("cpu"):
