@@ -381,6 +381,7 @@ class LlamaModel(nn.Module):
             return hidden_states, aux_hidden_states
         return hidden_states
 
+    @nvtx_range("llama_model.load_weights")
     def load_weights(self, weights: Iterable[Tuple[str,
                                                    torch.Tensor]]) -> Set[str]:
         stacked_params_mapping = [

@@ -16,6 +16,7 @@ from vllm.usage.usage_lib import (UsageContext, is_usage_stats_enabled,
                                   usage_message)
 from vllm.utils import get_mp_context, kill_process_tree
 from vllm.model_executor.smart_offloader import SmartBufferManager
+from vllm.spec_decode.util import nvtx_range
 
 if TYPE_CHECKING:
     from vllm.attention.layer import Attention
@@ -147,7 +148,7 @@ def shutdown(proc: Process, input_path: str, output_path: str):
         if os and os.path.exists(socket_file):
             os.remove(socket_file)
 
-
+@nvtx_range("bind_kv_cache")
 def bind_kv_cache(
     kv_caches: dict[str, torch.Tensor],
     forward_context: dict[str, "Attention"],

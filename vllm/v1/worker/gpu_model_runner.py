@@ -49,6 +49,7 @@ from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 
 from .utils import (gather_mm_placeholders, sanity_check_mm_encoder_outputs,
                     scatter_mm_placeholders)
+from vllm.spec_decode.util import nvtx_range
 
 if TYPE_CHECKING:
     import xgrammar as xgr
@@ -1686,6 +1687,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         logger.info("Graph capturing finished in %.0f secs, took %.2f GiB",
                     elapsed_time, cuda_graph_size / (1 << 30))
 
+    @nvtx_range("modelrunner.init_kv_cache")
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """
         Initialize KV cache based on `kv_cache_config`.
@@ -1722,6 +1724,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     kv_caches[layer_name] = torch.zeros(kv_cache_shape,
                                                         dtype=dtype,
                                                         device=self.device)
+                    logger.info(f"KV cache on layer {layer_name}: kv_cache_shape={kv_cache_shape}, size={tensor_config.size}, page_size={kv_cache_spec.page_size_bytes}")
                 else:
                     # TODO: add new branches when introducing more types of
                     # KV cache specs.

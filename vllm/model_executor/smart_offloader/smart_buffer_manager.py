@@ -38,6 +38,8 @@ class LayerManager:
 
     def add_tensor(self, name: str, p: Union[torch.nn.Parameter, torch.Tensor], kv_map: Tuple[int, int, str] = None):
         # assert name not in self.tensors, f"Parameter/tensor {name} already exists"
+        if kv_map is not None:  
+            logger.info(f"Layer {self.layer_id}, resident={self.on_gpu_static} adding kv tensor. is p a tensor? {torch.is_tensor(p)}")
         if (not self.on_gpu_static):
             t = p
             if not torch.is_tensor(p):
@@ -48,9 +50,11 @@ class LayerManager:
                                             device=self.cpu_device,
                                             pin_memory=True)
                 t.data.copy_(p.data)
-            t = t.to(device=self.cpu_device)
+            t = t.to(device=self.cpu_device).pin_memory()
             p.data = t
         self.tensors[name] = p
+        # Q1: This one may be wrong, because the model weights will directly load to the GPU memory if it is on_gpu_static = True
+        # The self.pinned_cpu_tensors[name] is always 0.
         self.pinned_cpu_tensors[name] = p.to(device=self.cpu_device).pin_memory()
         if name in "kv_cache":
             assert kv_map is not None, f"kv_map must be provided for kv_cache"
@@ -62,6 +66,7 @@ class LayerManager:
         if self.layer_id == self.start_layer:
             self.move_to_cuda()
 
+    @nvtx_range("LayerManager::move_to_cuda")
     def move_to_cuda(self):
         device = self.cuda_device
         for name, t in self.pinned_cpu_tensors.items():
@@ -79,6 +84,7 @@ class LayerManager:
             self.kv_holders["runners_kv_cache"][idx] = p
             self.kv_holders["forward_context"][layer_name].kv_cache = [p]
 
+    @nvtx_range("LayerManager::move_to_cpu")
     def move_to_cpu(self):
         device = self.cpu_device
         for name, t in self.tensors.items():
@@ -101,6 +107,7 @@ class LayerManager:
         for name, t in self.module.named_parameters():
             t.data = self.tensors[name] if to_device == self.cuda_device else self.pinned_cpu_tensors[name]
 
+    @nvtx_range("LayerManager::begin_compute")
     def begin_compute(self):
         self.is_recording_compute_event = True
         self.start_event.record(self.compute_stream)
@@ -120,6 +127,7 @@ class LayerManager:
         # if not self.on_gpu_static:
         logger.debug(f"***** Layer {self.layer_id}, {self.on_gpu_static}, takes {self.start_event.elapsed_time(self.end_event):.3f} ms *****")
     
+    # Question: No one use this funtion now? 
     def point_to_cpu_buffers(self):
         for name, t in self.tensors.items():
             t = self.pinned_cpu_tensors[name]
@@ -162,7 +170,8 @@ class SmartBufferManager:
     def add_tensor(self, layer_id: int, name: str, p: Union[torch.nn.Parameter, torch.Tensor]):
         assert layer_id in self.layers, f"Layer {layer_id} not in range"
         assert self.layers[layer_id] is not None, f"Layer {layer_id} already exists"
-        self.layers[layer_id].add_tensor(name, p)
+        with nvtx_range(f"SmartBufferManager::add_tensor_{layer_id}"):
+            self.layers[layer_id].add_tensor(name, p)
 
     def set_kv_holders(self, runners_kv_cache: List[torch.Tensor], forward_context: dict[str, "Attention"]):
         for layer_id in range(self.start_layer, self.end_layer):
@@ -173,14 +182,16 @@ class SmartBufferManager:
         layer_id, idx, layer_name = kv_mapping
         assert layer_id in self.layers, f"Layer {layer_id} not in range"
         assert self.layers[layer_id] is not None, f"Layer {layer_id} already exists"
-        self.layers[layer_id].add_tensor("kv_cache", p=p, kv_map=kv_mapping)
+        with nvtx_range(f"SmartBufferManager::add_kv_tensor_{layer_id}"):
+            self.layers[layer_id].add_tensor("kv_cache", p=p, kv_map=kv_mapping)
 
     def begin_compute(self, layer_id: int):
         assert layer_id in self.layers, f"Layer {layer_id} not in range"
         assert self.layers[layer_id] is not None, f"Layer {layer_id} already exists"
-        if (not self.layers[layer_id].on_gpu_static) and (self.k_layers is not None) and (self.prev_dynamic_layer != layer_id):
-            self.layers[self.prev_dynamic_layer]._async_update_kv_pointers(to_device=self.cpu_device)
-            self.prev_dynamic_layer = layer_id
+        with nvtx_range(f"SmartBufferManager::begin_compute_{layer_id}_kv_to_cpu_prev_{self.prev_dynamic_layer}"):
+            if (not self.layers[layer_id].on_gpu_static) and (self.k_layers is not None) and (self.prev_dynamic_layer != layer_id):
+                self.layers[self.prev_dynamic_layer]._async_update_kv_pointers(to_device=self.cpu_device)
+                self.prev_dynamic_layer = layer_id
         self.layers[layer_id].begin_compute()
         
     def end_compute(self, layer_id: int):
@@ -196,17 +207,22 @@ class SmartBufferManager:
                 next_k_layer = self.start_layer
             logger.debug(f"***** Layer {layer_id} is a dynamic GPU parameter, offloading it's KV cache and fetching the {next_k_layer} parameter *****")
             assert not self.layers[next_k_layer].on_gpu_static, f"Layer {next_k_layer} is a static GPU resident"
-            self.layers[next_k_layer].move_to_cuda()
+            with nvtx_range(f"SmartBufferManager::move_{next_k_layer}_to_cuda"):
+                self.layers[next_k_layer].move_to_cuda()
+        
+        logger.info(f"Memory after performing layer {layer_id} computation. Used memory: {print_mem_stats() / (1024**2):.2f} MB")
 
     def set_k_layers(self, k: int):
         if k > self.end_layer - self.start_layer:
             return None
         for idx, layer_id in enumerate(range(self.start_layer, self.end_layer)):
             if idx % k == 0:
-                self.layers[layer_id].on_gpu_static = False
-                self.layers[layer_id].move_to_cpu()
+                with nvtx_range(f"SmartBufferManager::move_{layer_id}_to_cpu"):
+                    self.layers[layer_id].on_gpu_static = False
+                    self.layers[layer_id].move_to_cpu()
             else:
-                self.layers[layer_id].on_gpu_static = True
-                self.layers[layer_id].move_to_cuda()
+                with nvtx_range(f"SmartBufferManager::move_{layer_id}_to_cuda"):
+                    self.layers[layer_id].on_gpu_static = True
+                    self.layers[layer_id].move_to_cuda()
         return k
 
