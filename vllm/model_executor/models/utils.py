@@ -551,32 +551,41 @@ def maybe_offload_to_cpu(module: torch.nn.Module, layer_id: int, buffer_manager 
 
     if buffer_manager:
         buffer_manager.register_module(layer_id, module)
-    for name, p in module.named_parameters():
-        if buffer_manager:
-            buffer_manager.add_tensor(layer_id, name, p)
-            continue
+    else:
+        for name, p in module.named_parameters():
+            if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES:
+                # we use per-parameter offloading
+                # one module might have some parameters offloaded and some not
+                device_state = {}
+                problematic = []
+                for k, v in module.state_dict().items():
+                    if v.device != device:
+                        problematic.append((k, v.device))
+                if problematic:
+                    raise Exception(f"Error with problematic transfers: {layer_id}: {problematic}")
+                output = functional_call(module,
+                                        device_state,
+                                        args=args,
+                                        kwargs=kwargs)
+                # output = module(*args, **kwargs)
+                break
 
-        if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES:
-            # we use per-parameter offloading
-            # one module might have some parameters offloaded and some not
-            break
-
-        # `torch.empty_like` does not support `pin_memory` argument
-        cpu_data = torch.empty_strided(size=p.data.size(),
-                                       stride=p.data.stride(),
-                                       dtype=p.data.dtype,
-                                       layout=p.data.layout,
-                                       device='cpu',
-                                       pin_memory=pin_memory)
-        cpu_data.copy_(p.data)
-        if not uva_offloading:
-            p.data = cpu_data
-        else:
-            # keep the cpu data alive
-            p._vllm_offloaded_cpu_data = cpu_data
-            p.data = get_cuda_view_from_cpu_tensor(cpu_data)
-        _CPU_OFFLOAD_BYTES += p.data.numel() * p.data.element_size()
-        offloaded_parameters = True
+            # `torch.empty_like` does not support `pin_memory` argument
+            cpu_data = torch.empty_strided(size=p.data.size(),
+                                        stride=p.data.stride(),
+                                        dtype=p.data.dtype,
+                                        layout=p.data.layout,
+                                        device='cpu',
+                                        pin_memory=pin_memory)
+            cpu_data.copy_(p.data)
+            if not uva_offloading:
+                p.data = cpu_data
+            else:
+                # keep the cpu data alive
+                p._vllm_offloaded_cpu_data = cpu_data
+                p.data = get_cuda_view_from_cpu_tensor(cpu_data)
+            _CPU_OFFLOAD_BYTES += p.data.numel() * p.data.element_size()
+            offloaded_parameters = True
 
     if buffer_manager:
         original_forward = module.forward
@@ -586,12 +595,9 @@ def maybe_offload_to_cpu(module: torch.nn.Module, layer_id: int, buffer_manager 
             with torch.cuda.stream(buffer_manager.compute_stream):
                 buffer_manager.begin_compute(layer_id)
                 device_state = {}
-                problematic = []
                 for k, v in module.state_dict().items():
-                    if v.device != device:
-                        problematic.append((k, v.device))
-                if problematic:
-                    raise Exception(f"Error with problematic transfers: {layer_id}: {problematic}")
+                    device_state[k] = v
+                    assert v.device == device, (f"Error: Datastructure {layer_id}: {k} is present on {v.device} instead of {device}")
                 output = functional_call(module,
                                         device_state,
                                         args=args,

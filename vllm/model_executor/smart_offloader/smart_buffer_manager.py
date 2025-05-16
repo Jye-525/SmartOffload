@@ -35,6 +35,8 @@ class LayerManager:
 
     def register_module(self, module: torch.nn.Module):
         self.module = module
+        for name, p in module.named_parameters():
+            self.add_tensor(name, p)
 
     def add_tensor(self, name: str, p: Union[torch.nn.Parameter, torch.Tensor], kv_map: Tuple[int, int, str] = None):
         # assert name not in self.tensors, f"Parameter/tensor {name} already exists"
