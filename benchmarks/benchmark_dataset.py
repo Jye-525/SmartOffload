@@ -28,7 +28,7 @@ from typing import Any, Callable, Optional, Union
 
 import numpy as np
 import pandas as pd
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 from PIL import Image
 from transformers import PreTrainedTokenizerBase
 
@@ -36,6 +36,8 @@ from vllm.lora.request import LoRARequest
 from vllm.lora.utils import get_adapter_absolute_path
 from vllm.multimodal import MultiModalDataDict
 from vllm.transformers_utils.tokenizer import AnyTokenizer, get_lora_tokenizer
+
+from longbench.longbench_data import load_lb_dataset, load_lb_v2_dataset, get_max_model_input_length, get_lb_dataset2maxgenlen
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,6 @@ class SampleRequest:
 
 class BenchmarkDataset(ABC):
     DEFAULT_SEED = 0
-    IS_MULTIMODAL = False
 
     def __init__(
         self,
@@ -336,7 +337,7 @@ class RandomDataset(BenchmarkDataset):
         output_lens = np.random.randint(output_low,
                                         output_high + 1,
                                         size=num_requests)
-        offsets = np.random.randint(0, vocab_size, size=num_requests)
+        offsets = np.random.randint(0, vocab_size-1, size=num_requests)
 
         requests = []
         for i in range(num_requests):
@@ -345,6 +346,20 @@ class RandomDataset(BenchmarkDataset):
             token_sequence = prefix_token_ids + inner_seq
             prompt = tokenizer.decode(token_sequence)
             total_input_len = prefix_len + int(input_lens[i])
+            ## verify if the prompt length is larger than the input length
+            verified_prompt_ids = tokenizer.encode(prompt)
+            actual_prompt_len = len(verified_prompt_ids)
+            print(f"Actual prompt length: {actual_prompt_len}, "
+                  f"total_input_len: {total_input_len}")
+            if actual_prompt_len > total_input_len:
+                prompt = tokenizer.decode(verified_prompt_ids[:total_input_len-1])
+            elif actual_prompt_len < total_input_len:
+                # If the prompt is shorter than the expected length, pad it.
+                remaining = (total_input_len - 1) - len(actual_prompt_len)
+                extra_tokens = [(offsets[i] + total_input_len + j) % vocab_size 
+                           for j in range(remaining)]
+                prompt = tokenizer.decode(token_sequence + extra_tokens)
+            
             requests.append(
                 SampleRequest(
                     prompt=prompt,
@@ -611,7 +626,6 @@ class HuggingFaceDataset(BenchmarkDataset):
         )
         self.data = self.data.shuffle(seed=self.random_seed)
 
-
 # -----------------------------------------------------------------------------
 # Conversation Dataset Implementation
 # -----------------------------------------------------------------------------
@@ -622,7 +636,6 @@ class ConversationDataset(HuggingFaceDataset):
     SUPPORTED_DATASET_PATHS = {
         'lmms-lab/LLaVA-OneVision-Data', 'Aeala/ShareGPT_Vicuna_unfiltered'
     }
-    IS_MULTIMODAL = True
 
     def sample(self,
                tokenizer: PreTrainedTokenizerBase,
@@ -687,7 +700,6 @@ class VisionArenaDataset(HuggingFaceDataset):
         "lmarena-ai/vision-arena-bench-v0.1":
         lambda x: x["turns"][0][0]["content"]
     }
-    IS_MULTIMODAL = True
 
     def sample(
         self,
@@ -772,60 +784,6 @@ class InstructCoderDataset(HuggingFaceDataset):
 
 
 # -----------------------------------------------------------------------------
-# MT-Bench Dataset Implementation
-# -----------------------------------------------------------------------------
-
-
-class MTBenchDataset(HuggingFaceDataset):
-    """
-    MT-Bench Dataset.
-    https://huggingface.co/datasets/philschmid/mt-bench
-
-    We create a single turn dataset for MT-Bench. 
-    This is similar to Spec decoding benchmark setup in vLLM
-    https://github.com/vllm-project/vllm/blob/9d98ab5ec/examples/offline_inference/eagle.py#L14-L18
-    """ # noqa: E501
-
-    DEFAULT_OUTPUT_LEN = 256  # avg len used in SD bench in vLLM
-    SUPPORTED_DATASET_PATHS = {
-        "philschmid/mt-bench",
-    }
-
-    def sample(self,
-               tokenizer: PreTrainedTokenizerBase,
-               num_requests: int,
-               output_len: Optional[int] = None,
-               enable_multimodal_chat: bool = False,
-               **kwargs) -> list:
-        output_len = (output_len
-                      if output_len is not None else self.DEFAULT_OUTPUT_LEN)
-        sampled_requests = []
-
-        for item in self.data:
-            if len(sampled_requests) >= num_requests:
-                break
-            prompt = item['turns'][0]
-
-            # apply template
-            prompt = tokenizer.apply_chat_template([{
-                "role": "user",
-                "content": prompt
-            }],
-                                                   add_generation_prompt=True,
-                                                   tokenize=False)
-
-            prompt_len = len(tokenizer(prompt).input_ids)
-            sampled_requests.append(
-                SampleRequest(
-                    prompt=prompt,
-                    prompt_len=prompt_len,
-                    expected_output_len=output_len,
-                ))
-        self.maybe_oversample_requests(sampled_requests, num_requests)
-        return sampled_requests
-
-
-# -----------------------------------------------------------------------------
 # AIMO Dataset Implementation
 # -----------------------------------------------------------------------------
 
@@ -875,77 +833,179 @@ class AIMODataset(HuggingFaceDataset):
 
 
 # -----------------------------------------------------------------------------
-# ASR Dataset Implementation
+# LongBench Dataset Implementation
+# -----------------------------------------------------------------------------
+class LongBenchDataset(BenchmarkDataset):
+    """
+    Implements the LongBench dataset.  Loads the corresponding task data from huggingface and generates
+    sample requests based on the prompts. 
+    """
+
+    def __init__(self, subtask=str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.subtask = subtask
+        if self.subtask is None:
+            raise ValueError("subtask must be provided for longbench dataset.")
+        self.load_data()
+    
+    def load_data(self, ):
+        # Load data from the LongBench dataset.
+        if self.dataset_path is None:
+            raise ValueError("dataset_path must be provided for loading data.")
+        self.data = load_lb_dataset(cache_dir=self.dataset_path, task=self.subtask, random_seed=self.random_seed)
+    
+    def sample(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        num_requests: int,
+        model_name: str,
+        max_output_len: Optional[int],
+        **kwargs,
+    ) -> list[SampleRequest]:
+        # get max_input_len based on the model name
+        max_model_input_len = get_max_model_input_length(model_name)
+        if max_output_len is not None:
+            max_input_len = max_model_input_len - max_output_len
+        else:
+            max_input_len = max_model_input_len - max(get_lb_dataset2maxgenlen().values())
+        
+        samples = []
+        for entry in self.data:
+            if len(samples) >= num_requests:
+                break
+            
+            prompt_format = entry['prompt_format']
+            format_args = {k: v for k, v in entry.items() if k not in ["prompt_format", "max_gen_len"]}
+            prompt = prompt_format.format(**format_args)
+            
+            # tokenize the prompt
+            prompt_ids = tokenizer(prompt).input_ids
+            if len(prompt_ids) > max_input_len:
+                # Truncate the input_ids, we usually truncate the middle part
+                prompt_ids = prompt_ids[:max_input_len//2] + prompt_ids[-max_input_len//2:]
+                prompt = tokenizer.decode(prompt_ids, skip_special_tokens=True)
+            
+            # Verify the tokenizes back to the correct length
+            prompt_len = len(tokenizer(prompt).input_ids)
+            output_len = entry['max_gen_len'] if max_output_len is None else max_output_len
+            samples.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=prompt_len,
+                    expected_output_len=output_len,
+                ))
+        return samples 
+
+# -----------------------------------------------------------------------------
+# LongBenchV2 Dataset Implementation
 # -----------------------------------------------------------------------------
 
-
-class ASRDataset(HuggingFaceDataset):
+class LongBenchV2Dataset(BenchmarkDataset):
     """
-    Dataset class for processing a ASR dataset for transcription.
-    Tested on the following set:
+    Implements the LongBench dataset. Loads the data huggingface and generates
+    sample requests based on the prompts. 
+    """
 
-    +----------------+----------------------------------------+--------------------------+-----------------------------+
-    | Dataset        | Domain                                 | Speaking Style           | hf-subset                   |
-    +----------------+----------------------------------------+--------------------------+-----------------------------+
-    | TED-LIUM       | TED talks                              | Oratory                  | release1, release2, release3|
-    |                |                                        |                          | release3-speaker-adaptation |
-    | VoxPopuli      | European Parliament                    | Oratory                  | en, de, it, fr,  ...        |
-    | LibriSpeech    | Audiobook                              | Narrated                 | "LIUM/tedlium"              |
-    | GigaSpeech     | Audiobook, podcast, YouTube            | Narrated, spontaneous    | xs, s, m, l, xl, dev, test  |
-    | SPGISpeech     | Financial meetings                     | Oratory, spontaneous     | S, M, L, dev, test          |
-    | AMI            | Meetings                               | Spontaneous              | ihm, sdm                    |
-    +----------------+----------------------------------------+--------------------------+-----------------------------+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.load_data()
 
-    """ # noqa: E501
-    SUPPORTED_DATASET_PATHS = {
-        "openslr/librispeech_asr", "facebook/voxpopuli", "LIUM/tedlium",
-        "edinburghcstr/ami", "speechcolab/gigaspeech", "kensho/spgispeech"
-    }
+    def load_data(self, ):
+        if self.dataset_path is None:
+            raise ValueError("dataset_path must be provided for loading data.")
 
-    DEFAULT_OUTPUT_LEN = 128
-    IS_MULTIMODAL = True
-
-    # TODO Whisper-specific. Abstract interface when more models are supported.
-    TRANSCRIPTION_PREAMBLE = "<|startoftranscript|><|en|><|transcribe|>"\
-                              "<|notimestamps|>"
-    skip_long_audios: bool = True
+        # Load the dataset
+        self.template_0shot, self.data = load_lb_v2_dataset(self.dataset_path, self.random_seed)
 
     def sample(
         self,
         tokenizer: PreTrainedTokenizerBase,
         num_requests: int,
-        output_len: Optional[int] = None,
+        model_name: str,
+        max_output_len: Optional[int],
         **kwargs,
-    ) -> list:
-        import librosa
-        output_len = (output_len
-                      if output_len is not None else self.DEFAULT_OUTPUT_LEN)
-        prompt = ASRDataset.TRANSCRIPTION_PREAMBLE
-        prompt_len = len(tokenizer(prompt).input_ids)
-        sampled_requests = []
-        skipped = 0
-        for item in self.data:
-            if len(sampled_requests) >= num_requests:
+    ) -> list[SampleRequest]:
+        max_model_input_len = get_max_model_input_length(model_name)
+        if max_output_len is not None:
+            max_input_len = max_model_input_len - max_output_len
+        else:
+            max_output_len = 128
+            max_input_len = max_model_input_len - max_output_len  
+        
+        samples = [] 
+        for entry in self.data:
+            if len(samples) >= num_requests:
                 break
-            audio = item["audio"]
-            y, sr = audio["array"], audio["sampling_rate"]
-            duration_s = librosa.get_duration(y=y, sr=sr)
-            # Whisper max supported duration
-            if self.skip_long_audios and duration_s > 30:
-                skipped += 1
-                continue
+            
+            context = entry['context']
+            template = self.template_0shot
+            prompt = template.replace('$DOC$', context.strip()).replace('$Q$', entry['question'].strip()).replace('$C_A$', entry['choice_A'].strip()).replace('$C_B$', entry['choice_B'].strip()).replace('$C_C$', entry['choice_C'].strip()).replace('$C_D$', entry['choice_D'].strip())
+         
+            # tokenize the prompt
+            prompt_ids = tokenizer(prompt).input_ids
+            if len(prompt_ids) > max_input_len:
+                # Truncate the input_ids, we usually truncate the middle part
+                prompt_ids = prompt_ids[:max_input_len//2] + prompt_ids[-max_input_len//2:]
+                prompt = tokenizer.decode(prompt_ids, skip_special_tokens=True)
+            
+            # Verify the tokenizes back to the correct length
+            prompt_len = len(tokenizer(prompt).input_ids)
+            samples.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=prompt_len,
+                    expected_output_len=max_output_len,
+                ))
+        return samples 
 
-            mm_content = {"audio": (y, sr)}
-            sampled_requests.append(
+# -----------------------------------------------------------------------------
+# GSM8K Dataset Implementation
+# -----------------------------------------------------------------------------
+
+class GSM8KDataset(BenchmarkDataset):
+    """
+    Implements the GSM8K dataset.  Loads data from huggingface and generates
+    sample requests based on the prompts.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.load_data()
+
+    def load_data(self, ):
+        if self.dataset_path is None:
+            raise ValueError("dataset_path must be provided for loading data.")
+
+        # Load the dataset from huggingface datasets.
+        dataset = load_dataset("gsm8k", "main", cache_dir=self.dataset_path)
+        dataset = concatenate_datasets([dataset["train"], dataset["test"]]) 
+        # shuffle the dataset
+        dataset = dataset.shuffle(seed=self.random_seed) 
+        self.data = dataset
+
+    def sample(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        num_requests: int,
+        max_output_len: Optional[int] = None,
+        **kwargs,
+    ) -> list[SampleRequest]:
+        samples = []
+        for entry in self.data:
+            if len(samples) >= num_requests:
+                break
+            
+            # Tokenize the prompts and completions.
+            prompt = f"Solve: {entry['question']}\nAnswer:"
+            prompt_token_ids = tokenizer(prompt).input_ids
+            output = entry['answer']
+            output_token_ids = tokenizer(output).input_ids
+            prompt_len = len(prompt_token_ids)
+            output_len = len(output_token_ids) if max_output_len is None else max_output_len
+            samples.append(
                 SampleRequest(
                     prompt=prompt,
                     prompt_len=prompt_len,
                     expected_output_len=output_len,
-                    multi_modal_data=mm_content,
                 ))
-        if skipped:
-            logger.warning("%d samples discarded from dataset due to" \
-                           " their length being greater than" \
-                           " what Whisper supports.", skipped)
-        self.maybe_oversample_requests(sampled_requests, num_requests)
-        return sampled_requests
+        return samples 

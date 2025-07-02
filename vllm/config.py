@@ -1335,6 +1335,8 @@ class CacheConfig:
     """Set the hash algorithm for prefix caching:\n
     - "builtin" is Python's built-in hash.\n
     - "sha256" is collision resistant but with certain overheads."""
+    cpu_offload_method: str = "default"
+    """Model weights offloading approach. choices are "default" or "smart_offload"."""
     cpu_offload_gb: float = 0
     """The space in GiB to offload to CPU, per GPU. Default is 0, which means
     no offloading. Intuitively, this argument can be seen as a virtual way to
@@ -1344,6 +1346,8 @@ class CacheConfig:
     Note that this requires fast CPU-GPU interconnect, as part of the model is
     loaded from CPU memory to GPU memory on the fly in each model forward pass.
     """
+    smart_offload_interval: int = 0
+    """Offloading interval for smart offload."""
     calculate_kv_scales: bool = False
     """This enables dynamic calculation of `k_scale` and `v_scale` when
     kv_cache_dtype is fp8. If `False`, the scales will be loaded from the model
@@ -1390,6 +1394,12 @@ class CacheConfig:
         return {key: str(value) for key, value in self.__dict__.items()}
 
     def _verify_args(self) -> None:
+        if self.cpu_offload_method not in ("default", "smart_offload"):
+            raise ValueError(
+                "Unknown CPU offload method: "
+                f"{self.cpu_offload_method}. Must be one of "
+                "default, smart_offload.")
+            
         if self.cpu_offload_gb < 0:
             raise ValueError("CPU offload space must be non-negative"
                              f", but got {self.cpu_offload_gb}")
@@ -1398,6 +1408,11 @@ class CacheConfig:
             raise ValueError(
                 "GPU memory utilization must be less than 1.0. Got "
                 f"{self.gpu_memory_utilization}.")
+            
+        if self.cpu_offload_method == "smart_offload" and self.smart_offload_interval <= 0:
+            raise ValueError(
+                f"smart_offload_interval must be greater than 0 when "
+                f"using smart offload. Got {self.smart_offload_interval}.")
 
     def _verify_cache_dtype(self) -> None:
         if self.cache_dtype == "auto":

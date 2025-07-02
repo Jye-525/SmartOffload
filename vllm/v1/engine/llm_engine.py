@@ -94,7 +94,8 @@ class LLMEngine:
             asyncio_mode=False,
             vllm_config=vllm_config,
             executor_class=executor_class,
-            log_stats=False,  # FIXME: implement
+            # log_stats=False,  # FIXME: implement
+            log_stats=True,
         )
 
         if not multiprocess_mode:
@@ -281,5 +282,11 @@ class LLMEngine:
         return self.engine_core.collective_rpc(method, timeout, args, kwargs)
 
     def __del__(self):
+        print(f"LLMEngine.__del__()", flush=True)
         if dp_group := getattr(self, "dp_group", None):
+            print(f"Destroying dp group", flush=True)
             stateless_destroy_torch_distributed_process_group(dp_group)
+            
+        if engine_core := getattr(self, "engine_core", None):
+            print(f"Shutting down engine core", flush=True)
+            engine_core.shutdown()

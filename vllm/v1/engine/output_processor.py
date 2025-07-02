@@ -15,6 +15,9 @@ from vllm.v1.engine.logprobs import LogprobsProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import (IterationStats, LoRARequestStates,
                                    RequestStateStats)
+import vllm.envs as envs
+from vllm.logger import init_logger
+logg = init_logger(__name__)
 
 
 class RequestOutputCollector:
@@ -418,3 +421,18 @@ class OutputProcessor:
         ParentRequest.observe_finished_request(
             req_state.parent_req, iteration_stats,
             req_state.stats.num_generation_tokens)
+        
+        if envs.VLLM_V1_TRACK_REQUETS:
+            # log the finished request
+            finished_req = iteration_stats.finished_requests[-1] 
+            logg.info(f"Finished request {req_state.request_id}, "
+                      f"e2e latency (s): {finished_req.e2e_latency:.6f} "
+                      f"num prompt tokens: {finished_req.num_prompt_tokens} "
+                      f"num generation tokens: {finished_req.num_generation_tokens} "
+                      f"finish reason: {finished_req.finish_reason} "
+                      f"queued time (s): {finished_req.queued_time:.6f} "
+                      f"prefill time (s): {finished_req.prefill_time:.6f} "
+                      f"inference time (s): {finished_req.inference_time:.6f} "
+                      f"decode time (s): {finished_req.decode_time:.6f} "
+                      f"TTFT (s): {(finished_req.queued_time + finished_req.prefill_time):.6f} "
+                      f"TPOT (s): {(finished_req.decode_time / finished_req.num_generation_tokens):.6f} ")

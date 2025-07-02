@@ -116,6 +116,8 @@ class EngineCore:
             logger.info("Batch queue is enabled with size %d",
                         self.batch_queue_size)
             self.batch_queue = queue.Queue(self.batch_queue_size)
+            
+        self.steps_count = 0
 
     def _initialize_kv_caches(
             self, vllm_config: VllmConfig) -> tuple[int, int, KVCacheConfig]:
@@ -199,10 +201,24 @@ class EngineCore:
                 outputs=[],
                 scheduler_stats=self.scheduler.make_stats(),
             )
+        self.steps_count += 1
         scheduler_output = self.scheduler.schedule()
+        logger.info(f"EngineCore step() scheduled {len(scheduler_output.scheduled_new_reqs)} new requests, "
+                     f"{len(scheduler_output.scheduled_cached_reqs)} cached requests in the the step function, step_id {self.steps_count} "
+                     f",total scheduled tokens {scheduler_output.total_num_scheduled_tokens}, KV cache utilization {self.scheduler.make_stats().gpu_cache_usage * 100:.2f}%")
         output = self.model_executor.execute_model(scheduler_output)
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, output)  # type: ignore
+        
+        if engine_core_outputs is not None:
+            logger.info(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+                        f"Scheduler stats: {engine_core_outputs.scheduler_stats.num_running_reqs} running requests, "
+                        f"{engine_core_outputs.scheduler_stats.num_waiting_reqs} waiting requests, total scheduled tokens {scheduler_output.total_num_scheduled_tokens}, "
+                        f"KV cache utilization {engine_core_outputs.scheduler_stats.gpu_cache_usage * 100:.2f}%"
+                        )
+        else:
+            logger.error(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+                         f"with no output.")
 
         return engine_core_outputs
 
@@ -228,7 +244,11 @@ class EngineCore:
         # the scheduler may return an empty batch if all requests are scheduled.
         # Note that this is not blocking.
         if not self.batch_queue.full():
+            self.steps_count += 1
             scheduler_output = self.scheduler.schedule()
+            logger.info(f"EngineCore step() scheduled {len(scheduler_output.scheduled_new_reqs)} new requests, "
+                     f"{len(scheduler_output.scheduled_cached_reqs)} cached requests in the step_with_batch_queue function, step_id {self.steps_count} "
+                     f",total scheduled tokens {scheduler_output.total_num_scheduled_tokens} ....")
             if scheduler_output.total_num_scheduled_tokens > 0:
                 future = self.model_executor.execute_model(scheduler_output)
                 self.batch_queue.put_nowait(
@@ -250,6 +270,17 @@ class EngineCore:
             self.batch_queue.task_done()
             engine_core_outputs = self.scheduler.update_from_output(
                 scheduler_output, model_output)
+            
+            if engine_core_outputs is not None:
+                logger.info(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+                            f"Scheduler stats: {engine_core_outputs.scheduler_stats.num_running_reqs} running requests, "
+                            f"{engine_core_outputs.scheduler_stats.num_waiting_reqs} waiting requests, "
+                            f"total scheduled tokens {scheduler_output.total_num_scheduled_tokens}, "
+                            f"KV cache utilization {engine_core_outputs.scheduler_stats.gpu_cache_usage * 100:.2f}%"
+                            )
+            else:
+                logger.error(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+                            f"with no output.")
 
         return engine_core_outputs
 

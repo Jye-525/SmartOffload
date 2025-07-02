@@ -180,7 +180,7 @@ def bind_kv_cache(
     runner_kv_caches = [None]*len(index2name)
 
     buffer_manager = None
-    if envs.VLLM_USE_SMART_OFFLOADING:
+    if envs.VLLM_USE_SMART_OFFLOADING and envs.VLLM_SMART_OFFLOAD_KVCACHE:
         buffer_manager = SmartBufferManager.get_instance()
         if buffer_manager is None:
             raise RuntimeError("Failed to get SmartBufferManager instance. Model should be initied before KV cache binding.")

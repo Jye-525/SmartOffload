@@ -551,41 +551,33 @@ def maybe_offload_to_cpu(module: torch.nn.Module, layer_id: int, buffer_manager 
 
     if buffer_manager:
         buffer_manager.register_module(layer_id, module)
-    else:
-        for name, p in module.named_parameters():
-            if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES:
-                # # we use per-parameter offloading
-                # # one module might have some parameters offloaded and some not
-                # device_state = {}
-                # problematic = []
-                # for k, v in module.state_dict().items():
-                #     if v.device != device:
-                #         problematic.append((k, v.device))
-                # if problematic:
-                #     raise Exception(f"Error with problematic transfers: {layer_id}: {problematic}")
-                # output = functional_call(module,
-                #                         device_state,
-                #                         args=args,
-                #                         kwargs=kwargs)
-                # # output = module(*args, **kwargs)
-                break
+    for name, p in module.named_parameters():
+        if buffer_manager:
+            # print(f"Buffer manager: Parameter {name} has type: {type(p)}, it is torch.Tensor={isinstance(p, torch.Tensor)}, or torch.nn.Parameter={isinstance(p, torch.nn.Parameter)}")
+            buffer_manager.add_tensor(layer_id, name, p)
+            continue
 
-            # `torch.empty_like` does not support `pin_memory` argument
-            cpu_data = torch.empty_strided(size=p.data.size(),
-                                        stride=p.data.stride(),
-                                        dtype=p.data.dtype,
-                                        layout=p.data.layout,
-                                        device='cpu',
-                                        pin_memory=pin_memory)
-            cpu_data.copy_(p.data)
-            if not uva_offloading:
-                p.data = cpu_data
-            else:
-                # keep the cpu data alive
-                p._vllm_offloaded_cpu_data = cpu_data
-                p.data = get_cuda_view_from_cpu_tensor(cpu_data)
-            _CPU_OFFLOAD_BYTES += p.data.numel() * p.data.element_size()
-            offloaded_parameters = True
+        if _CPU_OFFLOAD_BYTES >= _CPU_OFFLOAD_MAX_BYTES:
+            # we use per-parameter offloading
+            # one module might have some parameters offloaded and some not
+            break
+
+        # `torch.empty_like` does not support `pin_memory` argument
+        cpu_data = torch.empty_strided(size=p.data.size(),
+                                       stride=p.data.stride(),
+                                       dtype=p.data.dtype,
+                                       layout=p.data.layout,
+                                       device='cpu',
+                                       pin_memory=pin_memory)
+        cpu_data.copy_(p.data)
+        if not uva_offloading:
+            p.data = cpu_data
+        else:
+            # keep the cpu data alive
+            p._vllm_offloaded_cpu_data = cpu_data
+            p.data = get_cuda_view_from_cpu_tensor(cpu_data)
+        _CPU_OFFLOAD_BYTES += p.data.numel() * p.data.element_size()
+        offloaded_parameters = True
 
     if buffer_manager:
         original_forward = module.forward
@@ -594,15 +586,18 @@ def maybe_offload_to_cpu(module: torch.nn.Module, layer_id: int, buffer_manager 
             module.forward = original_forward
             with torch.cuda.stream(buffer_manager.compute_stream):
                 buffer_manager.begin_compute(layer_id)
-                # device_state = {}
-                # for k, v in module.state_dict().items():
-                #     device_state[k] = v
-                #     assert v.device == device, (f"Error: Datastructure {layer_id}: {k} is present on {v.device} instead of {device}")
-                # output = functional_call(module,
-                #                         device_state,
-                #                         args=args,
-                #                         kwargs=kwargs)
-                output = module(*args, **kwargs)
+                device_state = {}
+                problematic = []
+                for k, v in module.state_dict().items():
+                    if v.device != device:
+                        problematic.append((k, v.device))
+                if problematic:
+                    raise Exception(f"Error with problematic transfers: {layer_id}: {problematic}")
+                output = functional_call(module,
+                                        device_state,
+                                        args=args,
+                                        kwargs=kwargs)
+                # output = module(*args, **kwargs)
                 buffer_manager.end_compute(layer_id)
             module.forward = forward
             return output
@@ -643,23 +638,10 @@ def make_layers(
     start_layer, end_layer = get_pp_indices(num_hidden_layers,
                                             get_pp_group().rank_in_group,
                                             get_pp_group().world_size)
-    
-    cache_config = None
-    if hasattr(layer_fn, '__closure__') and layer_fn.__closure__:
-        for cell in layer_fn.__closure__:
-            if hasattr(cell.cell_contents, 'cpu_offload_method'):
-                cache_config = cell.cell_contents
-                break
-        print(f"****** We have a cache_config for layer {start_layer} to {end_layer} ******{cache_config.cpu_offload_method}")
-    else:
-        raise ValueError("Layer function does not have the expected closure.")
-    
+
     buffer_manager = None
-    # if envs.VLLM_USE_SMART_OFFLOADING:
-    #     buffer_manager = SmartBufferManager(start_layer, end_layer, k=int(envs.VLLM_USE_SMART_OFFLOADING_K))
-    #     print(f"****** We have a buffer_manager for layer {start_layer} to {end_layer} ******")
-    if cache_config is not None and cache_config.cpu_offload_method == "smart_offload":
-        buffer_manager = SmartBufferManager(start_layer, end_layer, k=cache_config.smart_offload_interval)
+    if envs.VLLM_USE_SMART_OFFLOADING:
+        buffer_manager = SmartBufferManager(start_layer, end_layer, k=int(envs.VLLM_USE_SMART_OFFLOADING_K))
         print(f"****** We have a buffer_manager for layer {start_layer} to {end_layer} ******")
     
     my_layers = []

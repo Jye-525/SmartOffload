@@ -22,16 +22,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Inference-only LLaMA model compatible with HuggingFace weights."""
-from typing import Any, Dict, Iterable, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, Optional, Set, Tuple, Union, List
 
 import torch
 from torch import nn
 from transformers import LlamaConfig
 
+import vllm.envs as envs
+from vllm.model_executor.smart_offloader import SmartBufferManager
 from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank, get_world_group
+from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
@@ -45,6 +48,7 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, maybe_remap_kv_scale_name)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.forward_context import get_forward_context
 from vllm.sequence import IntermediateTensors
 
 from .interfaces import SupportsLoRA, SupportsPP
@@ -53,7 +57,10 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
 from vllm.spec_decode.util import nvtx_range
+from vllm.utils import GiB_bytes
+import time
 
+logger = init_logger(__name__)
 
 class LlamaMLP(nn.Module):
 
@@ -219,6 +226,7 @@ class LlamaDecoderLayer(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        self.layer_idx = extract_layer_index(prefix)
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -306,6 +314,7 @@ class LlamaModel(nn.Module):
 
         self.config = config
         self.quant_config = quant_config
+        self.cache_config = cache_config
         lora_vocab = (lora_config.lora_extra_vocab_size *
                       (lora_config.max_loras or 1)) if lora_config else 0
         self.vocab_size = config.vocab_size + lora_vocab
@@ -338,9 +347,27 @@ class LlamaModel(nn.Module):
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
+        
+        self.init_cpu_time = 0
+        self.init_cuda_event = torch.cuda.Event(enable_timing=True)
+        self.fwd_counts = 1
+        self.per_decode_layer_size = self.get_per_decode_layer_bytes()
+        self.timing_layer_fwd = envs.VLLM_ENABLE_LAYER_FWD_TIMING
+         
+        logger.info(f"PP Rank {get_pp_group().rank_in_group}/{get_pp_group().ranks} "
+                    f"TP Rank {get_tensor_model_parallel_rank()} include {len(self.layers)} layers,"
+                    f" start layer: {self.start_layer} end layer: {self.end_layer}, per decode layer size: {self.per_decode_layer_size/GiB_bytes:.3f} GB")
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
+    
+    def get_per_decode_layer_bytes(self) -> int:
+        # Assuming all layers have the same size
+        module = self.layers[self.start_layer]
+        total_bytes = 0
+        for param in module.parameters():
+            total_bytes += param.numel() * param.element_size()
+        return total_bytes
 
     @nvtx_range("llama_model.forward")
     def forward(
@@ -351,33 +378,62 @@ class LlamaModel(nn.Module):
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors, tuple[torch.Tensor,
                                                         list[torch.Tensor]]]:
+        is_dummy_run = True if get_forward_context().attn_metadata is None else False
+        layer_start_events = None
+        layer_end_events = None
+        if is_dummy_run == False and self.timing_layer_fwd:
+            # skip the first fwd_counts since it is the profiling run
+            layer_start_events = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
+            layer_end_events = [torch.cuda.Event(enable_timing=True) for _ in range(self.start_layer, self.end_layer)]
+        
         if get_pp_group().is_first_rank:
+            cur_timestamp = time.time_ns()
+            relative_cpu_start_time = cur_timestamp - self.init_cpu_time
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
             else:
                 hidden_states = self.get_input_embeddings(input_ids)
             residual = None
+            if is_dummy_run == False and self.timing_layer_fwd:
+                logger.info(f"[abs_timestamp(ns): {cur_timestamp}] [relative_start(ns): {relative_cpu_start_time:.3f}]"
+                            f" PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} start forward on the model, fwd_counts: {self.fwd_counts}"
+                            f" num_input_tokens: {hidden_states.shape[0]}, is_dummy_run: {is_dummy_run}")    
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        input_tokens = hidden_states.shape[0]
         aux_hidden_states = []
         for idx, layer in enumerate(
                 self.layers[self.start_layer:self.end_layer]):
+            self.record_event(layer_start_events, idx, is_dummy_run, self.timing_layer_fwd)
             if idx in self.aux_hidden_state_layers:
                 aux_hidden_states.append(hidden_states + residual)
             hidden_states, residual = layer(positions, hidden_states, residual)
+            self.record_event(layer_end_events, idx, is_dummy_run, self.timing_layer_fwd)
 
         if not get_pp_group().is_last_rank:
-            return IntermediateTensors({
+            hidden_states = IntermediateTensors({
                 "hidden_states": hidden_states,
                 "residual": residual
             })
-
-        hidden_states, _ = self.norm(hidden_states, residual)
-
-        if len(aux_hidden_states) > 0:
+        else:
+            hidden_states, _ = self.norm(hidden_states, residual)
+            
+        if not is_dummy_run:
+            if self.timing_layer_fwd:
+                self.cal_and_log_fwd_time(layer_start_events, layer_end_events, input_tokens) 
+                if get_pp_group().is_last_rank:
+                    cur_timestamp = time.time_ns()
+                    relative_cpu_end_time = cur_timestamp - self.init_cpu_time
+                    # print the timestamp of the last rank (GPU time)  --> calculate the total time (lastrank - first ranjk, from log information)
+                    logger.info(f"[abs_timestamp(ns): {cur_timestamp}] [relative_end(ns): {relative_cpu_end_time:.3f}]"
+                                f" PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} stop forward on the model. fwd_counts: {self.fwd_counts} num_input_tokens: {input_tokens}")
+            
+            self.fwd_counts += 1
+        
+        if get_pp_group().is_last_rank and len(aux_hidden_states) > 0:
             return hidden_states, aux_hidden_states
         return hidden_states
 
@@ -447,7 +503,39 @@ class LlamaModel(nn.Module):
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
-
+    
+    def organize_layers(self) -> None:
+        if self.cache_config.cpu_offload_method == 'smart_offload':
+            # This function is called after loading weights to ensure that
+            # the KV cache is bound to the correct layer.
+            buffer_manager = SmartBufferManager.get_instance()
+            if buffer_manager is not None:
+                for layer in self.layers:
+                    buffer_manager.organize_module_weights(layer.layer_idx)
+            else:
+                raise RuntimeError(
+                    "SmartBufferManager is not initialized. "
+                    "Please check your configuration.")
+    
+    def record_init_timestamp(self):
+        self.init_cpu_time = time.time_ns()
+        self.init_cuda_event.record()
+        
+    def record_event(self, events: List[torch.cuda.Event], idx: int, is_dummy_run: bool, is_timing_fwd: bool):
+        if not is_dummy_run and is_timing_fwd:
+            events[idx].record()
+            
+    def cal_and_log_fwd_time(self, start_events: List[torch.cuda.Event], end_events: List[torch.cuda.Event], input_tokens: int):
+        end_events[-1].synchronize()
+        for idx in range(0, self.end_layer - self.start_layer):
+            relative_start_time = self.init_cuda_event.elapsed_time(start_events[idx])
+            relative_end_time = self.init_cuda_event.elapsed_time(end_events[idx])
+            layer_fwd_time = start_events[idx].elapsed_time(end_events[idx])
+            logger.info(f"PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} "
+                        f"Layer {self.start_layer + idx} relative timing info, layer_relative_start: {relative_start_time:.3f} layer_relative_end: {relative_end_time:.3f} "
+                        f"layer_fwd_time: {layer_fwd_time:.3f} ms, " 
+                        f"fwd_counts: {self.fwd_counts} num_input_tokens: {input_tokens}")
+        
 
 class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     packed_modules_mapping = {
@@ -531,6 +619,20 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors)
+        
+        # init record timestamp
+        current_device = torch.cuda.current_device()
+        self.init_record_timestamp()
+        logger.info(f"PP Rank {get_pp_group().rank_in_group}/{get_pp_group().rank} "
+                     f"TP Rank {get_tensor_model_parallel_rank()} "
+                     f"WORLD RANK {get_world_group().local_rank}/{get_world_group().rank} the gpu device is {current_device}")
+    
+    def init_record_timestamp(self):
+        # Step 1: call torch.distribute.barrier() to synchronize all ranks
+        torch.cuda.synchronize() # in case of some GPUs has unfinished tasks.
+        get_world_group().barrier()
+        # Step 2: call self.model to record the initial timestamp
+        self.model.record_init_timestamp()
 
     def set_aux_hidden_state_layers(self, layers: tuple[int]) -> None:
         self.model.aux_hidden_state_layers = layers
@@ -577,9 +679,14 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             skip_prefixes=(["lm_head."]
                            if self.config.tie_word_embeddings else None),
         )
-        return loader.load_weights(
+        
+        loaded_weights = loader.load_weights(
             self.maybe_remap_mistral(name, loaded_weight)
             for name, loaded_weight in weights)
+        
+        self.model.organize_layers()
+        
+        return loaded_weights
 
     # This function is used to remap the mistral format as
     # used by Mistral and Llama <=2

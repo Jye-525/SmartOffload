@@ -197,7 +197,7 @@ _build/
 hip_compat.h
 
 # Benchmark dataset
-benchmarks/**/*.json
+#benchmarks/**/*.json
 
 # Linting
 actionlint
@@ -207,3 +207,10 @@ shellcheck*/
 csrc/moe/marlin_moe_wna16/kernel_*
 
 results/
+
+# Ignore vllm's requirements files (Jie)
+requirements/
+
+# Ignore vllm's CMake files (Jie)
+CMakeLists.txt
+pyproject.toml

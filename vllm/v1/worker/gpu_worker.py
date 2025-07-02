@@ -15,7 +15,7 @@ from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment,
                               set_custom_all_reduce)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
-from vllm.distributed.parallel_state import get_pp_group
+from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor import set_random_seed
@@ -208,6 +208,28 @@ class Worker(WorkerBase):
         available_kv_cache_memory = (
             total_gpu_memory * self.cache_config.gpu_memory_utilization -
             peak_memory)
+        
+        msg = (f"PP Rank {get_pp_group().rank_in_group} TP Rank {get_tensor_model_parallel_rank()} "
+               "The current vLLM instance can use "
+               "total_gpu_memory "
+               f"({(total_gpu_memory / GiB_bytes):.2f} GiB)"
+               " x gpu_memory_utilization "
+               f"({self.cache_config.gpu_memory_utilization:.2f})"
+               f" = {((total_gpu_memory * self.cache_config.gpu_memory_utilization) / GiB_bytes):.2f} GiB\n"
+               "model weights take "
+               f"{(self.model_runner.model_memory_usage / GiB_bytes):.2f} GiB;"
+               f"total_allocated_memory takes "
+               f"{(total_allocated_bytes / GiB_bytes):.2f} GiB;"
+               " torch_allocated_memory takes "
+               f"{(torch_allocated_bytes / GiB_bytes):.2f} GiB;"
+               " non_torch_memory takes "
+               f"{(non_torch_allocations / GiB_bytes):.2f} GiB;"
+               " peak memory (PyTorch peak + non_torch_memory) takes "
+               f"{(peak_memory / GiB_bytes):.2f} GiB;"
+               " the rest of the memory reserved for KV Cache is "
+               f"{(available_kv_cache_memory / GiB_bytes):.2f} GiB.")
+
+        logger.info(msg)
 
         return int(available_kv_cache_memory)
 

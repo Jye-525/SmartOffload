@@ -4,7 +4,7 @@ import argparse
 import json
 import math
 import os
-from typing import Any
+from typing import Any, List
 
 
 def convert_to_pytorch_benchmark_format(args: argparse.Namespace,
@@ -67,3 +67,17 @@ class InfEncoder(json.JSONEncoder):
 def write_to_json(filename: str, records: list) -> None:
     with open(filename, "w") as f:
         json.dump(records, f, cls=InfEncoder)
+
+        
+def str_list(val: str) -> List[str]:
+    """Parses a string containing comma separated values into a list. Each value is a str."""
+    if len(val) == 0:
+        raise argparse.ArgumentTypeError("Empty string is not allowed")
+    out_lst: List[str] = []
+    for item in val.split(","):
+        try:
+            out_lst.append(item)
+        except ValueError as exc:
+            msg = f"Failed to parse value {item}"
+            raise argparse.ArgumentTypeError(msg) from exc
+    return out_lst

@@ -47,6 +47,19 @@ T = TypeVar("T")
 TypeHint = Union[type[Any], object]
 TypeHintT = Union[type[T], object]
 
+def str_list(val: str) -> List[str]:
+    """Parses a string containing comma separated values into a list. Each value is a str."""
+    if len(val) == 0:
+        raise argparse.ArgumentTypeError("Empty string is not allowed")
+    out_lst: List[str] = []
+    for item in val.split(","):
+        try:
+            out_lst.append(item)
+        except ValueError as exc:
+            msg = f"Failed to parse value {item}"
+            raise argparse.ArgumentTypeError(msg) from exc
+    return out_lst
+
 
 def optional_type(
         return_type: Callable[[str], T]) -> Callable[[str], Optional[T]]:
@@ -240,7 +253,10 @@ class EngineArgs:
     disable_cascade_attn: bool = False
     use_v2_block_manager: bool = True
     swap_space: float = CacheConfig.swap_space
-    cpu_offload_gb: float = CacheConfig.cpu_offload_gb
+    cpu_offload_method: str = 'default' # default, smart_offload
+    cpu_offload_gb: float = 0  # GiB
+    # smart_offload_dynamic: int = 0 # 0: static offloading interval, 1: dynamic offloading interval
+    smart_offload_interval: Optional[int] = None
     gpu_memory_utilization: float = CacheConfig.gpu_memory_utilization
     max_num_batched_tokens: Optional[
         int] = SchedulerConfig.max_num_batched_tokens
@@ -565,8 +581,12 @@ class EngineArgs:
                                  **cache_kwargs["enable_prefix_caching"])
         cache_group.add_argument("--prefix-caching-hash-algo",
                                  **cache_kwargs["prefix_caching_hash_algo"])
+        cache_group.add_argument('--cpu-offload-method',
+                                 **cache_kwargs["cpu_offload_method"]) 
         cache_group.add_argument('--cpu-offload-gb',
                                  **cache_kwargs["cpu_offload_gb"])
+        cache_group.add_argument('--smart-offload-interval',
+                                **cache_kwargs["smart_offload_interval"])
         cache_group.add_argument('--calculate-kv-scales',
                                  **cache_kwargs["calculate_kv_scales"])
 
@@ -1133,7 +1153,9 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             prefix_caching_hash_algo=self.prefix_caching_hash_algo,
+            cpu_offload_method=self.cpu_offload_method,
             cpu_offload_gb=self.cpu_offload_gb,
+            smart_offload_interval=self.smart_offload_interval,
             calculate_kv_scales=self.calculate_kv_scales,
         )
 

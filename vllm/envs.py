@@ -111,7 +111,12 @@ if TYPE_CHECKING:
     VLLM_XGRAMMAR_CACHE_MB: int = 0
     VLLM_MSGPACK_ZERO_COPY_THRESHOLD: int = 256
     VLLM_USE_SMART_OFFLOADING: bool = False
+    VLLM_SMART_OFFLOAD_KVCACHE: bool = False
     VLLM_USE_SMART_OFFLOADING_K: int = 1e4
+    VLLM_ENABLE_LAYER_FWD_TIMING: bool = False
+    VLLM_V1_SCHEDULE_METHOD: str = "default"
+    VLLM_V1_ADAPTIVE_MAX_NUM_REQS: bool = False # enable/disable dynamically adjust the max number of requests scheduled in a batch [lower_bound, uppbound]
+    VLLM_V1_TRACK_REQUETS: bool = False
 
 
 def get_default_cache_root():
@@ -733,8 +738,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
 
     # Enable/disable the smart-offloading approach.
     "VLLM_USE_SMART_OFFLOADING": lambda: os.environ.get("VLLM_USE_SMART_OFFLOADING", "0") == "1",
+    # Enable/disable the smart-offloading approach for the key cache.
+    "VLLM_SMART_OFFLOAD_KVCACHE": lambda: os.environ.get("VLLM_SMART_OFFLOAD_KVCACHE", "0") == "1", 
 
     "VLLM_USE_SMART_OFFLOADING_K": lambda: int(os.environ.get("VLLM_USE_SMART_OFFLOADING_K", "1e4")),
+    
+    "VLLM_ENABLE_LAYER_FWD_TIMING": lambda: os.environ.get("VLLM_ENABLE_LAYER_FWD_TIMING", "0") == "1",
+    
+    "VLLM_V1_SCHEDULE_METHOD": lambda: os.environ.get("VLLM_V1_SCHEDULE_METHOD", "default"),
+    
+    "VLLM_V1_ADAPTIVE_MAX_NUM_REQS": lambda: os.environ.get("VLLM_V1_ADAPTIVE_MAX_NUM_REQS", "0") == "1",
+    
+    "VLLM_V1_TRACK_REQUETS": lambda: os.environ.get("VLLM_V1_TRACK_REQUETS", "0") == "1", 
 }
 
 # end-env-vars-definition

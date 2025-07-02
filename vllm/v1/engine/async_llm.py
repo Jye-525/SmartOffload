@@ -249,7 +249,8 @@ class AsyncLLM(EngineClient):
         await self.engine_core.add_request_async(request)
 
         if self.log_requests:
-            logger.info("Added request %s.", request.request_id)
+            # logger.info("Added request %s.", request.request_id)
+            logger.info(f"Added request {request.request_id} with {len(request.prompt_token_ids)} prompt tokens")
 
     # TODO: we should support multiple prompts in one call, as you
     # can do with LLM.generate. So that for multi-prompt completion

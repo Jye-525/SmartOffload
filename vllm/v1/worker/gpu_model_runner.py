@@ -80,8 +80,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.observability_config = vllm_config.observability_config
 
         from vllm.model_executor.models.utils import set_cpu_offload_max_bytes
-        set_cpu_offload_max_bytes(
-            int(self.cache_config.cpu_offload_gb * 1024**3))
+        if self.cache_config.cpu_offload_method == "default":
+            set_cpu_offload_max_bytes(
+                int(self.cache_config.cpu_offload_gb * 1024**3))
+        else:
+            set_cpu_offload_max_bytes(0)
 
         model_config = self.model_config
         cache_config = self.cache_config
@@ -1724,7 +1727,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     kv_caches[layer_name] = torch.zeros(kv_cache_shape,
                                                         dtype=dtype,
                                                         device=self.device)
-                    logger.info(f"KV cache on layer {layer_name}: kv_cache_shape={kv_cache_shape}, size={tensor_config.size}, page_size={kv_cache_spec.page_size_bytes}")
+                    # logger.info(f"KV cache on layer {layer_name}: kv_cache_shape={kv_cache_shape}, size={tensor_config.size}, page_size={kv_cache_spec.page_size_bytes}")
                 else:
                     # TODO: add new branches when introducing more types of
                     # KV cache specs.
