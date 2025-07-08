@@ -118,6 +118,8 @@ class Scheduler(SchedulerInterface):
         if speculative_config and speculative_config.method == "eagle":
             self.num_lookahead_tokens = \
                 speculative_config.num_speculative_tokens
+                
+        self.schedule_step_count = 0
 
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
@@ -135,6 +137,8 @@ class Scheduler(SchedulerInterface):
         scheduled_resumed_reqs: list[Request] = []
         scheduled_running_reqs: list[Request] = []
         preempted_reqs: list[Request] = []
+        total_preempted_tokens = 0
+        total_resumed_tokens = 0
 
         # NOTE: structured_output_request_ids maps
         # a request's (request that uses structured output)
@@ -155,6 +159,7 @@ class Scheduler(SchedulerInterface):
 
         # For logging.
         scheduled_timestamp = time.monotonic()
+        self.schedule_step_count += 1
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -203,6 +208,8 @@ class Scheduler(SchedulerInterface):
                     # Preempt the lowest-priority request.
                     preempted_req = self.running.pop()
                     self.kv_cache_manager.free(preempted_req)
+                    total_preempted_tokens += preempted_req.num_computed_tokens
+                    preempted_req.num_recomputed_tokens = preempted_req.num_computed_tokens
                     preempted_req.status = RequestStatus.PREEMPTED
                     preempted_req.num_computed_tokens = 0
                     if self.log_stats:
@@ -349,6 +356,8 @@ class Scheduler(SchedulerInterface):
                     scheduled_new_reqs.append(request)
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
+                    total_resumed_tokens += request.num_recomputed_tokens
+                    request.num_recomputed_tokens = 0
                 else:
                     raise RuntimeError(
                         f"Invalid request status: {request.status}")
@@ -456,6 +465,12 @@ class Scheduler(SchedulerInterface):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
+        
+        if total_preempted_tokens > 0:
+            logger.info(f"Scheduler preempted {len(preempted_reqs)} requests with {total_preempted_tokens} tokens on step {self.schedule_step_count}")
+        if total_resumed_tokens > 0:
+            logger.info(f"Scheduler scheduled {len(resumed_reqs_data)} resumed requests with {total_resumed_tokens} tokens on step {self.schedule_step_count}")
+         
         return scheduler_output
 
     def _make_cached_request_data(
