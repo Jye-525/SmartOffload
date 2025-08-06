@@ -98,6 +98,8 @@ class LLMEngine:
             log_stats=True,
         )
 
+        logger.info(f"LLMEngine_V1 create engine core {self.engine_core.__class__} with executor {executor_class.__name__}")
+
         if not multiprocess_mode:
             # for v0 compatibility
             self.model_executor = self.engine_core.engine_core.model_executor  # type: ignore
@@ -192,6 +194,8 @@ class LLMEngine:
             self.output_processor.add_request(request, prompt_str, None, 0)
             # Add the request to EngineCore.
             self.engine_core.add_request(request)
+            
+            logger.debug(f"LLMEngine_V1 added request {request.request_id} with {len(request.prompt_token_ids)} prompt tokens")
             return
 
         # Fan out child requests (for n>1).

@@ -120,6 +120,8 @@ class AsyncLLM(EngineClient):
             executor_class=executor_class,
             log_stats=self.log_stats,
         )
+        
+        logger.info(f"AsyncLLM create engine core {self.engine_core.__class__} with executor {executor_class.__name__}")
 
         self.output_handler: Optional[asyncio.Task] = None
         try:
@@ -250,7 +252,8 @@ class AsyncLLM(EngineClient):
 
         if self.log_requests:
             # logger.info("Added request %s.", request.request_id)
-            logger.info(f"Added request {request.request_id} with {len(request.prompt_token_ids)} prompt tokens")
+            logger.info(f"AsyncLLM added request {request.request_id} with {len(request.prompt_token_ids)} prompt tokens")
+        # logger.debug(f"AsyncLLM added request {request.request_id} with {len(request.prompt_token_ids)} prompt tokens")
 
     # TODO: we should support multiple prompts in one call, as you
     # can do with LLM.generate. So that for multi-prompt completion

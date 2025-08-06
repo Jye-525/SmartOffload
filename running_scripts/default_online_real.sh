@@ -1,0 +1,452 @@
+#!/bin/bash
+### Note the bash version should be 4.0 or above
+PROJ_PATH="$HOME/moe_mix_precision/SmartOffload_polaris/running_scripts/"
+
+source $PROJ_PATH/vllm_env_vars_ray
+
+echo "Start running default_online_real.sh ..."
+
+PYTHON_PATH=`which python`
+echo "The current python executable path is $PYTHON_PATH"
+################### Configurable Parameters to Change #####################
+EXEC_PATH="$PROJ_PATH/../benchmarks/"
+MODEL_PATH="/lus/eagle/projects/RECUP/jye/huggingface-hub/"
+BASE_DATASET_PATH="/lus/eagle/projects/RECUP/jye/datasets/"
+LOG_BASE_PATH="${HOME}/moe_mix_precision/venilla_avinash/"
+
+# Model configurations
+declare -A MODEL_CONFIG=(
+    # Format: "TP PP MAX_MODEL_LEN GPU_MEMORY_LIMIT"
+    ["meta-llama/Llama-3.1-8B"]="1 1 65536 0.9"
+    ["deepseek-ai/deepseek-coder-33b-base"]="4 1 32768 0.8"
+    ["meta-llama/Llama-3.3-70B-Instruct"]="4 2 32768 0.8" # 0.77 is minimum gpu limit
+    ["alpindale/goliath-120b"]="4 4 4096 0.8" # 0.45 is minimum gpu limit
+    ["meta-llama/Llama-3.1-405B"]="4 10 32768 0.8" # 0.8 is minimum gpu limit 
+)
+
+TESTA_CASES=("prompt-decode") #  "prompt-only" "decode-only"  "prompt-decode"
+NUM_TRIES=1
+# NUM_REQS=(200)
+# NUM_REQS=(500)
+# NUM_REQS=(10 50 100 150 200)
+# NUM_REQS=(250 300 350 400 450 500)
+#NUM_REQS=(300 350 400)
+NUM_REQS=(200)
+
+# Associative array declaration for different datasets
+SUBTASKS="multi_news" # used for longbench, choices: gov_report, multi_news, lcc (500)
+declare -A DATASETS=(
+    ["longbench"]="--dataset-name longbench --dataset-path ${BASE_DATASET_PATH} --longbench-subtasks \"${SUBTASKS}\""
+    ["gsm8k"]="--dataset-name gsm8k --dataset-path ${BASE_DATASET_PATH}"
+    ["sharedgpt"]="--dataset-name sharedgpt --dataset-path ${BASE_DATASET_PATH}"
+)
+
+# Associative array declaration for synthetic datasets
+INPUT_LENS=(8192)
+OUT_LENS=(1) 
+declare -A SYNT_DATASETS=(
+    ["random"]="--dataset-name random --random-input-len __INPUT_LEN__ --random-output-len __OUT_LEN__ --random-range-ratio 1.0"
+    ["fixed-len"]="--dataset-name fixed-len --fixed-input-len __INPUT_LEN__ --fixed-output-len __OUT_LEN__"
+)
+
+DATASET_NAME="random" # longbench, gsm8k
+MODEL="meta-llama/Llama-3.1-8B"
+# MODEL="deepseek-ai/deepseek-coder-33b-base"
+#MODEL="meta-llama/Llama-3.3-70B-Instruct"
+# MODEL="alpindale/goliath-120b"
+# MODEL="meta-llama/Llama-3.1-405B"
+IFS=' ' read -r TP PP MAX_MODEL_LEN GPU_MEM_LIMIT <<< "${MODEL_CONFIG[$MODEL]}"
+
+OFFLOAD_TYPE=2 # 0 no offloading, 1: vllm naive offloading, 2: smart_offload
+OFFLOAD_DYNAMIC=0 # 0: static offloading, 1: dynamic offloading
+OFFLOAD_LAYER_INTERVAL=8 # used for smart_offload
+OFFLOAG_GB=5 # used for vllm naive offloading
+declare -A OFFLOAD_CONFIG=(
+    # Format: "OFFLOAD_TYPE "
+    ["1"]="--cpu-offload-method default --cpu-offload-gb ${OFFLOAG_GB}"
+    ["2"]="--cpu-offload-method smart_offload --smart-offload-dynamic ${OFFLOAD_DYNAMIC} --smart-offload-interval ${OFFLOAD_LAYER_INTERVAL} --smart-offload-param-target all"
+)
+
+
+EXECUTOR_BACKEND="ray" # "ray" or "mp", for "mp", it only supports on a single node (PP * TP <= 4)
+#EXEC_MODE="eager" # "eager"
+LOG_STATS_INTER=5 # in seconds
+PREEMP_MODE="recompute" # "recompute" or "swap"
+MAX_NUM_BATCHED_TOKENS=8192 # max number of tokens in a batch, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+EN_CHUNKED_PREFILL=True # "True" or "False"
+EN_PREFIX_CACHING=False # "True" or "False"
+SCHEDULER_CLS="vllm.v1.core.sched.scheduler.Scheduler" # "vllm.core.scheduler.Scheduler" or "vllm.v1.core.sched.scheduler.Scheduler"
+# SCHEDULER_CLS="vllm.core.scheduler.Scheduler"
+MONITOR="False" # "True" or "False"
+
+VLLM_V0_OR_V1="1" # 0: vllm v0, 1: vllm v1
+echo "VLLM_USE_V1=${VLLM_USE_V1}"
+if [ -z "$VLLM_USE_V1" ] || [ "$VLLM_USE_V1" = "0" ]; then
+   VLLM_V0_OR_V1="0"
+   if [ "$EN_CHUNKED_PREFILL" = "True" ]; then
+        VLLM_V0_OR_V1=${VLLM_V0_OR_V1}"_chunked"  # no offloading for ray executor
+    fi
+elif [ "$VLLM_USE_V1" = "1" ]; then
+   VLLM_V0_OR_V1="1_chunked"
+fi
+
+
+MODEL_NAME=$(echo $MODEL | cut -d'/' -f2)
+# LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_offload${OFFLOAD_LAYER_INTERVAL}/"
+if [ $OFFLOAD_TYPE -eq 2 ]; then
+    LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_v${VLLM_V0_OR_V1}_offload${OFFLOAD_TYPE}_dyn${OFFLOAD_DYNAMIC}_inter${OFFLOAD_LAYER_INTERVAL}/"
+elif [ $OFFLOAD_TYPE -eq 1 ]; then 
+    LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_v${VLLM_V0_OR_V1}_offload${OFFLOAD_TYPE}_size${OFFLOAG_GB}/"
+else
+    LOG_PATH="${LOG_BASE_PATH}/logs_${MODEL_NAME}_tp${TP}_pp${PP}_${PREEMP_MODE}_v${VLLM_V0_OR_V1}_offload${OFFLOAD_TYPE}/"
+fi
+
+SUB_PATH="${DATASET_NAME}"
+if [ ${DATASET_NAME} = "longbench" ]; then
+    SUB_PATH="${SUB_PATH}--${SUBTASKS//,/--}"
+fi
+LOG_PATH="${LOG_PATH}/${SUB_PATH}/"
+[ -d $LOG_PATH ] || mkdir -p $LOG_PATH
+
+###################################### Related Helper functions #############################################
+start_gpu_monitor() {
+    NRANKS_PER_NODE=1
+    echo "Monitoring starting......"
+    # start gpu monitor & host memory monitor
+    for gpu_id in $(seq 0 $((NRANKS_PER_NODE - 1))); 
+    do
+        setsid python ${PROJ_PATH}/monitor_gpu.py $gpu_id "${LOG_PATH}/monitor-gpu${gpu_id}.csv" &
+        monitor_pid[$gpu_id]=$!
+        echo "Monitoring started for GPU $gpu_id at PID ${monitor_pid[$gpu_id]}, PATH=${LOG_PATH}/monitor-gpu${gpu_id}.csv."
+    done
+    setsid python ${PROJ_PATH}/monitor_host_mem.py "${LOG_PATH}/monitor-vmem.csv" &
+}
+
+stop_gpu_monitor() {
+    NRANKS_PER_NODE=1
+    echo "Monitoring stopping......"
+    # Terminate monitoring for all GPUs and host memory
+    for gpu_id in $(seq 0 $((NRANKS_PER_NODE - 1))); 
+    do
+        echo "Killing the monitoring script for GPU $gpu_id at PID ${monitor_pid[$gpu_id]}."
+        kill -2 ${monitor_pid[$gpu_id]}
+        echo "SIGTERM (kill -2) instructed to monitoring script for GPU $gpu_id."
+        wait ${monitor_pid[$gpu_id]}
+        echo "Killed the monitoring script for GPU $gpu_id."
+    done
+
+    kill -2 $(pgrep -f monitor_host_mem.py)
+    echo "SIGTERM (kill -2) instructed to monitoring script for host memory."
+    wait $(pgrep -f monitor_host_mem.py)
+    echo "Killed the monitoring script for host memory."
+}
+
+###################################### Start and Stop Ray Clsuter ###########################################
+start_ray_cluster() {
+    RAY_SCRIPT="$PROJ_PATH/start_ray_cluster.sh"
+    eval "$RAY_SCRIPT"
+    sleep 10
+    echo "Ray cluster started ..."
+    eval "ray status"
+}
+
+stop_ray_cluster() {
+    RAY_STOP_SCRIPT="$PROJ_PATH/stop_ray_cluster.sh" 
+    eval "$RAY_STOP_SCRIPT"
+    sleep 5
+    eval "$RAY_STOP_SCRIPT"
+    echo "Ray cluster stopped ..."
+}
+
+###################################### Start and Stop vLLM Server ###########################################
+start_vllm_server() {
+    server_log_file=$1
+    trial_id=$2
+
+    vllm_cmd="nohup nsys profile --force-overwrite true -t cuda,cudnn,cublas,nvtx -o report_llama_wo_offload_raw.nsys-rep --trace-fork-before-exec=true \
+        vllm serve ${MODEL} \
+        --download-dir ${MODEL_PATH} \
+        --trust-remote-code \
+        --enforce-eager \
+        --distributed-executor-backend ${EXECUTOR_BACKEND} \
+        --tensor-parallel-size ${TP} \
+        --pipeline-parallel-size ${PP} \
+        --disable-log-requests \
+        --max-model-len ${MAX_MODEL_LEN} \
+        --gpu-memory-utilization ${GPU_MEM_LIMIT} \
+        --scheduler-cls ${SCHEDULER_CLS} \
+        --log-stats-interval ${LOG_STATS_INTER} \
+        --collect-layer-fwd-time "
+        
+
+    if [ -z "$VLLM_USE_V1" ] || [ "$VLLM_USE_V1" = "0" ]; then
+        vllm_cmd+=" --preemption-mode ${PREEMP_MODE} --enable-chunked-prefill=${EN_CHUNKED_PREFILL} "
+        if [ "$EN_CHUNKED_PREFILL" = "True" ]; then
+            vllm_cmd+=" --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} "
+        fi
+    elif [ "$VLLM_USE_V1" = "1" ]; then
+        # chunked prefill is always enabled
+        vllm_cmd+=" --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} " 
+    fi
+
+    if [ "$EN_PREFIX_CACHING" = "True" ]; then
+        vllm_cmd+=" --enable-prefix-caching "
+    fi
+
+    if [ "$EN_PREFIX_CACHING" = "False" ]; then
+        vllm_cmd+=" --no-enable-prefix-caching "
+    fi
+
+
+    if [ $OFFLOAD_TYPE -ne 0 ]; then
+        vllm_cmd+="${OFFLOAD_CONFIG[$OFFLOAD_TYPE]}"
+    fi
+    
+    eval "$vllm_cmd" > "$server_log_file" 2>&1 &
+}
+
+check_vllm_server_start() {
+    server_log_file=$1
+    sleep_inter=5
+    total_wait_time=600
+    
+    sleep $sleep_inter
+    echo "Start checking if the vLLM server started successfully..."
+    
+    waiting_time=0
+    while true; do
+        if [ $waiting_time -ge $total_wait_time ]; then
+            echo "vLLM server failed to start ..."
+            return 1
+        fi
+        # Check for the Uvicorn message
+        if grep -q "INFO:     Waiting for application startup." "$server_log_file"; then
+            echo "vLLM server started successfully!"
+            return 0
+        fi
+        sleep $sleep_inter
+        waiting_time=$((waiting_time + sleep_inter))
+    done
+}
+
+stop_vllm_server() {
+    killall -9 /home/jieye/venvs/vllm_moe/bin/python
+    sleep 5
+    killall -9 /home/jieye/venvs/vllm_moe/bin/python 
+    echo "VLLM server stopped ..."
+}
+
+####################################### Run the client benchmark ##################################################
+Run_client_bench() {
+    local dataset_type=$1
+    local client_log_file_name=$2
+    local num_req=$3
+    local extra_params=$4
+
+    if [ "$dataset_type" = "synthetic" ]; then
+        dataset_config="${extra_params}"
+    elif [ "$dataset_type" = "real" ]; then
+        dataset_config="${DATASETS[$DATASET_NAME]}" 
+        gen_len=$extra_params 
+        if [ $gen_len -gt 0 ]; then
+            case "$DATASET_NAME" in
+                "longbench")   dataset_config+=" --longbench-output-len $gen_len" ;;
+                "gsm8k")       dataset_config+=" --gsm8k-output-len $gen_len" ;;
+                "sharedgpt")   dataset_config+=" --sharedgpt-output-len $gen_len" ;;
+            esac
+        fi
+    fi
+    
+    client_cmd="python ${EXEC_PATH}/benchmark_serving.py \
+                    --backend vllm \
+                    --model $MODEL \
+                    --ignore-eos \
+                    --num-prompts $num_req \
+                    ${dataset_config} "
+
+            
+    eval "${client_cmd}" > "${client_log_file_name}" 2>&1
+    # sleep 180 # give the server some time to finish the requests
+    sleep 60
+}
+
+################################################## Run the Client Test ##########################################################
+benchmark_with_real_dataset() {
+    local gen_len=$1
+    for num_req in ${NUM_REQS[@]}; do
+        echo "Start running with num_req=${num_req} requests using dataset ${DATASET_NAME} ..."
+        for try_idx in $(seq 1 $NUM_TRIES); do
+            if [ $gen_len -gt 0 ]; then
+                SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_g${gen_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_bt${MAX_NUM_BATCHED_TOKENS}_eager_${try_idx}.log"
+                CLIENT_LOG_FILE_NAME="${LOG_PATH}/client_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_g${gen_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_bt${MAX_NUM_BATCHED_TOKENS}_eager_${try_idx}.log"
+            else
+                SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_bt${MAX_NUM_BATCHED_TOKENS}_eager_${try_idx}.log"
+                CLIENT_LOG_FILE_NAME="${LOG_PATH}/client_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_bt${MAX_NUM_BATCHED_TOKENS}_eager_${try_idx}.log"
+            fi
+
+            if [ $EXECUTOR_BACKEND = "ray" ]; then
+                # stop ray cluster in case it is not stopped by previous run
+                stop_ray_cluster
+                # start ray cluster
+                start_ray_cluster
+            fi
+
+            if [ ${MONITOR} = "True" ];then
+                start_gpu_monitor
+            fi
+
+            # Start vLLM server
+            start_vllm_server ${SERVER_LOG_FILE_NAME} ${try_idx}
+            # Check vLLM server status
+            check_vllm_server_start ${SERVER_LOG_FILE_NAME}
+            if [ $? -ne 0 ]; then
+                echo "Failed to start vLLM server. Continue to next test...."
+                continue
+            fi
+            sleep 2
+
+            # Start the client benchmark
+            Run_client_bench "real" ${CLIENT_LOG_FILE_NAME} ${num_req} ${gen_len} 
+            sleep 2
+
+            # Stop Monitor
+            if [ ${MONITOR} = "True" ];then
+                stop_gpu_monitor
+            fi
+
+            # Stop the vLLM server
+            stop_vllm_server
+
+            # Stop the ray cluster if it was started
+            if [ $EXECUTOR_BACKEND = "ray" ]; then
+                stop_ray_cluster
+            fi
+        done
+        echo "Finished inference with num_req=${num_req} requests using dataset ${DATASET_NAME} ..."
+    done 
+}
+
+benchmark_with_synthetic_dataset() {
+    local test_case=$1
+    if [ "$test_case" = "prompt-only" ]; then
+        OUT_LENS=(1) # decode length
+    fi
+
+    for num_req in ${NUM_REQS[@]}; do
+        echo "Start running with num_req=${num_req} requests using dataset ${DATASET_NAME} ..."
+        for input_len in ${INPUT_LENS[@]}; do
+            for out_len in ${OUT_LENS[@]}; do
+                # Replace placeholders with actual values
+                dataset_config="${SYNT_DATASETS[$DATASET_NAME]}"
+                dataset_config="${dataset_config//__INPUT_LEN__/$input_len}"
+                dataset_config="${dataset_config//__OUT_LEN__/$out_len}"
+                echo "Dataset: $DATASET_NAME, Config: $dataset_config"
+
+                for try_idx in $(seq 1 $NUM_TRIES); do
+                    SERVER_LOG_FILE_NAME="${LOG_PATH}/server_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_p${input_len}_g${out_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
+                    CLIENT_LOG_FILE_NAME="${LOG_PATH}/client_${MODEL_NAME}_d${DATASET_NAME}_c${MAX_MODEL_LEN}_p${input_len}_g${out_len}_r${num_req}_tp${TP}_pp${PP}_gpu${GPU_MEM_LIMIT}_eager_${try_idx}.log"
+
+                    if [ $EXECUTOR_BACKEND = "ray" ]; then
+                        # stop ray cluster in case it is not stopped by previous run
+                        stop_ray_cluster
+                        # start ray cluster
+                        start_ray_cluster
+                    fi
+
+                    # Start vLLM server
+                    start_vllm_server ${SERVER_LOG_FILE_NAME}
+                    # Check vLLM server status
+                    check_vllm_server_start ${SERVER_LOG_FILE_NAME}
+                    if [ $? -ne 0 ]; then
+                        echo "Failed to start vLLM server. Continue to next test...."
+                        continue
+                    fi
+                    sleep 2
+
+                    # Start the client benchmark
+                    Run_client_bench "synthetic" ${CLIENT_LOG_FILE_NAME} ${num_req} "${dataset_config}" 
+                    sleep 2
+
+                    # Stop the vLLM server
+                    stop_vllm_server
+
+                    # Stop the ray cluster if it was started
+                    if [ $EXECUTOR_BACKEND = "ray" ]; then
+                        stop_ray_cluster
+                    fi
+                done
+            done
+        done
+    done
+}
+
+#################################################################################
+
+
+if [ $OFFLOAD_TYPE -eq 0 ]; then
+    # gen_len=-1
+    echo "Running without offloading ..."
+    for test_case in "${TESTA_CASES[@]}"; do
+        if [ "$test_case" = "prompt-only" ]; then
+            gen_len=1 # decode length
+        elif [ "$test_case" = "prompt-decode" ]; then
+            if [ "$DATASET_NAME" = "longbench" ]; then
+                gen_len=$(jq '.'${SUBTASKS} $EXEC_PATH/longbench/config/dataset2maxlen.json)
+            else
+                gen_len=-1 # decode length, meaning that we did not override the decode length
+            fi
+        else
+            echo "Invalid test case ${test_case}. Continue next..."
+            continue
+        fi
+        echo "gen_len=" $gen_len
+        case "$DATASET_NAME" in
+            "longbench"|"gsm8k"|"sharedgpt")   benchmark_with_real_dataset $gen_len ;;
+            "random"|"fixed-len")      benchmark_with_synthetic_dataset $test_case ;;
+        esac  
+    done 
+
+elif [ $OFFLOAD_TYPE -eq 1 ]; then
+    echo "Running experiments with vllm naive offloading ..."
+    for test_case in "${TESTA_CASES[@]}"; do
+        if [ "$test_case" = "prompt-only" ]; then
+            gen_len=1 # decode length
+        elif [ "$test_case" = "prompt-decode" ]; then
+            if [ "$DATASET_NAME" = "longbench" ]; then
+                gen_len=$(jq '.'${SUBTASKS} $EXEC_PATH/longbench/config/dataset2maxlen.json)
+            else
+                gen_len=-1 # decode length, meaning that we did not override the decode length
+            fi
+        else
+            echo "Invalid test case ${test_case}. Continue next..."
+            continue
+        fi
+        case "$DATASET_NAME" in
+            "longbench"|"gsm8k"|"sharedgpt")   benchmark_with_real_dataset $gen_len ;;
+            "random"|"fixed-len")      benchmark_with_synthetic_dataset $test_case ;;
+        esac  
+    done 
+elif [ $OFFLOAD_TYPE -eq 2 ]; then
+    echo "Running experiments with our offloading approach ..."
+    for test_case in "${TESTA_CASES[@]}"; do
+        if [ "$test_case" = "prompt-only" ]; then
+            gen_len=1 # decode length
+        elif [ "$test_case" = "prompt-decode" ]; then
+            if [ "$DATASET_NAME" = "longbench" ]; then
+                gen_len=$(jq '.'${SUBTASKS} $EXEC_PATH/longbench/config/dataset2maxlen.json)
+            else
+                gen_len=-1 # decode length, meaning that we did not override the decode length
+            fi
+        else
+            echo "Invalid test case ${test_case}. Continue next..."
+            continue
+        fi
+        case "$DATASET_NAME" in
+            "longbench"|"gsm8k"|"sharedgpt")   benchmark_with_real_dataset $gen_len ;;
+            "random"|"fixed-len")      benchmark_with_synthetic_dataset $test_case ;;
+        esac  
+    done 
+else
+    echo "Invalid offload type ${OFFLOAD_TYPE}. Exiting..."
+    exit 1
+fi
