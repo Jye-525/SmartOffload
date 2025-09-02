@@ -37,6 +37,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.version import __version__ as VLLM_VERSION
+from vllm.v1.stats_utils.sched_stats import SchedStatsCollector
 
 logger = init_logger(__name__)
 
@@ -59,6 +60,10 @@ class EngineCore:
                     VLLM_VERSION, vllm_config)
 
         self.log_stats = log_stats
+
+        ### Instantiate the scheduling stats once
+        self.sched_stats = SchedStatsCollector.get()
+        print(f"EngineCore get sched_stats: {self.sched_stats}")
 
         # Setup Model.
         self.model_executor = executor_class(vllm_config)
@@ -201,36 +206,54 @@ class EngineCore:
                 outputs=[],
                 scheduler_stats=self.scheduler.make_stats(),
             )
-        if self.steps_count == 0:
-            self.timer1 = time.perf_counter_ns()
-        
-        s_start = time.perf_counter_ns() 
+
         self.steps_count += 1
+        s_start = time.perf_counter_ns() 
+        self.sched_stats.start_step(self.steps_count, t_ns=s_start)
+        kv_usage_before_sched = self.scheduler.make_stats().gpu_cache_usage * 100
+        est_avg_output_length = self.scheduler.avg_output_len
         scheduler_output = self.scheduler.schedule()
-        ss_start = time.perf_counter_ns()
-        logger.info(f"EngineCore step() scheduled {len(scheduler_output.scheduled_new_reqs)} new requests, "
-                     f"{len(scheduler_output.scheduled_cached_reqs)} cached requests in the the step function, step_id {self.steps_count} "
-                     f",total scheduled tokens {scheduler_output.total_num_scheduled_tokens}, KV cache utilization {self.scheduler.make_stats().gpu_cache_usage * 100:.2f}% "
-                     f" skip_count_1 = {self.scheduler.opt5_skip_count_1} skip_count_2 = {self.scheduler.opt5_skip_count_2} skip_count_3 = {self.scheduler.opt5_skip_count_3} "
-                     f" est_avg_length = {self.scheduler.avg_output_len} sched_time = {(ss_start - s_start) / 1e6:.2f} ms per_step_time {(s_start - self.timer1) / 1e6:.2f} ms")
+        kv_usage_after_sched = self.scheduler.make_stats().gpu_cache_usage * 100
+        s_end = time.perf_counter_ns()
+        # logger.info(f"EngineCore step() scheduled {len(scheduler_output.scheduled_new_reqs)} new requests, "
+        #              f"{len(scheduler_output.scheduled_cached_reqs)} cached requests in the the step function, step_id {self.steps_count} "
+        #              f",total scheduled tokens {scheduler_output.total_num_scheduled_tokens}, KV cache utilization {self.scheduler.make_stats().gpu_cache_usage * 100:.2f}% "
+        #              f" skip_count_1 = {self.scheduler.opt5_skip_count_1} skip_count_2 = {self.scheduler.opt5_skip_count_2} skip_count_3 = {self.scheduler.opt5_skip_count_3} "
+        #              f" est_avg_length = {self.scheduler.avg_output_len} sched_time = {(s_end - s_start) / 1e6:.2f} ms ")
         output = self.model_executor.execute_model(scheduler_output)
+        e_end = time.perf_counter_ns()
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, output)  # type: ignore
-        
-        s_end = time.perf_counter_ns()
-        if engine_core_outputs is not None:
-            logger.info(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
-                        f"Scheduler stats: {engine_core_outputs.scheduler_stats.num_running_reqs} running requests, "
-                        f"{engine_core_outputs.scheduler_stats.num_waiting_reqs} waiting requests, total scheduled tokens {scheduler_output.total_num_scheduled_tokens}, "
-                        f"KV cache utilization {engine_core_outputs.scheduler_stats.gpu_cache_usage * 100:.2f}% sched_time = {(ss_start - s_start) / 1e6:.2f} ms exec_time = {(s_end - ss_start) / 1e6:.2f} ms "
-                        f"sched+exec = {(s_end - s_start) / 1e6:.2f} ms per_step_time = {(s_end - self.timer1) / 1e6:.2f} ms"
-                        )
-        else:
-            logger.error(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
-                         f"with no output.")
+        e_end_2 = time.perf_counter_ns()
+        kv_usage_after_process = self.scheduler.make_stats().gpu_cache_usage * 100
 
-        self.timer1 = s_end # to calculate the time duration between current step and the next step
-        
+        ## record the corresponding metrics for the current step
+        self.sched_stats.add_metrics(self.steps_count,
+            {
+                "sched_dur_ms": (s_end - s_start) / 1e6,
+                "exec_dur_ms": (e_end - s_end) / 1e6,
+                "output_dur_ms": (e_end_2 - e_end) / 1e6,
+                "total_scheduled_tokens": scheduler_output.total_num_scheduled_tokens,
+                "kv_usage_before_sched": kv_usage_before_sched,
+                "kv_usage_after_sched": kv_usage_after_sched,
+                "kv_usage_after_process": kv_usage_after_process,
+                "est_avg_output_length": est_avg_output_length,
+            }
+        )
+
+        # if engine_core_outputs is not None:
+        #     logger.info(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+        #                 f"Scheduler stats: {engine_core_outputs.scheduler_stats.num_running_reqs} running requests, "
+        #                 f"{engine_core_outputs.scheduler_stats.num_waiting_reqs} waiting requests, total scheduled tokens {scheduler_output.total_num_scheduled_tokens}, "
+        #                 f"KV cache utilization {engine_core_outputs.scheduler_stats.gpu_cache_usage * 100:.2f}% sched_time = {(s_end - s_start) / 1e6:.2f} ms exec_time = {(e_end - s_end) / 1e6:.2f} ms "
+        #                 f"sched+exec = {(e_end - s_start) / 1e6:.2f} ms sched+exec+output = {(e_end_2 - s_start) / 1e6:.2f} ms"
+        #                 )
+        # else:
+        #     logger.error(f"EngineCore step() finished the forward iteration in step_id {self.steps_count} "
+        #                  f"with no output.")
+
+        self.timer1 = e_end_2 # to calculate the time duration between current step and the next step
+        self.sched_stats.end_step(self.steps_count, t_ns=e_end_2)
         return engine_core_outputs
 
     def step_with_batch_queue(self) -> Optional[EngineCoreOutputs]:
@@ -299,6 +322,8 @@ class EngineCore:
         self.structured_output_manager.clear_backend()
         if self.model_executor:
             self.model_executor.shutdown()
+        print(f"EngineCore shutdown()", flush=True)
+        self.sched_stats.finalize()
 
     def profile(self, is_start: bool = True):
         self.model_executor.profile(is_start)

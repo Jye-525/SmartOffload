@@ -117,6 +117,10 @@ if TYPE_CHECKING:
     VLLM_V1_SCHEDULE_METHOD: str = "default"
     VLLM_V1_ADAPTIVE_MAX_NUM_REQS: bool = False # enable/disable dynamically adjust the max number of requests scheduled in a batch [lower_bound, uppbound]
     VLLM_V1_TRACK_REQUETS: bool = False
+    ### Scheduling stats
+    VLLM_V1_SCHED_STATS: bool = False
+    VLLM_V1_SCHED_STATS_PATH: Optional[str] = None
+    VLLM_V1_SCHED_STATS_FLUSH_EVERY_N: int = 0
 
 
 def get_default_cache_root():
@@ -750,6 +754,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_V1_ADAPTIVE_MAX_NUM_REQS": lambda: os.environ.get("VLLM_V1_ADAPTIVE_MAX_NUM_REQS", "0") == "1",
     
     "VLLM_V1_TRACK_REQUETS": lambda: os.environ.get("VLLM_V1_TRACK_REQUETS", "0") == "1", 
+
+    ### Scheduling stats
+    "VLLM_V1_SCHED_STATS": lambda: os.environ.get("VLLM_V1_SCHED_STATS", "0") == "1",
+    "VLLM_V1_SCHED_STATS_PATH": lambda: os.environ.get("VLLM_V1_SCHED_STATS_PATH", None),
+    "VLLM_V1_SCHED_STATS_FLUSH_EVERY_N": lambda: int(os.environ.get("VLLM_V1_SCHED_STATS_FLUSH_EVERY_N", "0")),
+
+    ### Track request stats
+    "VLLM_V1_REQ_STATS_ENABLED": lambda: os.environ.get("VLLM_V1_REQ_STATS_ENABLED", "0") == "1",
+    "VLLM_V1_REQ_STATS_CSV_PATH": lambda: os.environ.get("VLLM_V1_REQ_STATS_CSV_PATH", None),
 }
 
 # end-env-vars-definition

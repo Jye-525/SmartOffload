@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Optional, Union, Dict, Any
 
 from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
 from vllm.sampling_params import SamplingParams
@@ -11,6 +11,8 @@ from vllm.v1.engine import (EngineCoreEvent, EngineCoreEventType,
 from vllm.v1.structured_output.request import StructuredOutputRequest
 from vllm.v1.utils import ConstantList
 from vllm.logger import init_logger
+from vllm.v1.stats_utils.requests_stats import RequestStatsCollector
+import os
 
 if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest
@@ -154,18 +156,25 @@ class Request:
             return None
         events, self.events = self.events, []
         return events
+
+    def get_preempt_info(self) -> Dict[str, Any]:
+        return {
+            "preempt_count": self.repeat_preempt_count,
+            "preempt_step_ids": self.preempt_step_ids,
+            "resume_step_ids": self.resume_step_ids
+        }
     
-    # Added by Jie to track the information of each request
-    def __del__(self):
-        if self.is_finished() and self.repeat_preempt_count > 0:
-            # log the request information when it is finished
-            logger.info(
-                f"Request {self.request_id} is finished. "
-                f"Raw prompt token len: {self.num_prompt_tokens}, "
-                f"Repeated preempt count: {self.repeat_preempt_count}, "
-                f"Preempt step IDs: {self.preempt_step_ids}, "
-                f"Resume step IDs: {self.resume_step_ids}"
-            ) 
+    # # Added by Jie to track the information of each request
+    # def __del__(self):
+    #     if self.is_finished() and self.repeat_preempt_count > 0:
+    #         # # log the request information when it is finished
+    #         logger.info(
+    #             f"Request {self.request_id} is finished. "
+    #             f"Raw prompt token len: {self.num_prompt_tokens}, "
+    #             f"Repeated preempt count: {self.repeat_preempt_count}, "
+    #             f"Preempt step IDs: {self.preempt_step_ids}, "
+    #             f"Resume step IDs: {self.resume_step_ids}"
+    #         )
 
 
 class RequestStatus(enum.IntEnum):

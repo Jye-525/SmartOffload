@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any
 
 from vllm.outputs import CompletionOutput, RequestOutput
 from vllm.sampling_params import RequestOutputKind
@@ -16,6 +16,9 @@ from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import (IterationStats, LoRARequestStates,
                                    RequestStateStats)
 import vllm.envs as envs
+from vllm.v1.stats_utils.requests_stats import RequestStatsCollector
+import os
+
 from vllm.logger import init_logger
 logg = init_logger(__name__)
 
@@ -237,6 +240,10 @@ class OutputProcessor:
         self.request_states: dict[str, RequestState] = {}
         self.parent_requests: dict[str, ParentRequest] = {}
         self.lora_states = LoRARequestStates()
+        if envs.VLLM_USE_V1 and self.log_stats:
+            self.request_stats_collector = RequestStatsCollector.get()
+        else:
+            self.request_stats_collector = None
 
     def get_num_unfinished_requests(self):
         return len(self.request_states)
@@ -377,7 +384,8 @@ class OutputProcessor:
 
                 # Track per-request stats
                 self._update_stats_from_finished(req_state, finish_reason,
-                                                 iteration_stats)
+                                                 iteration_stats, 
+                                                 engine_core_output.preempt_info)
 
         self.lora_states.update_iteration_stats(iteration_stats)
 
@@ -405,7 +413,8 @@ class OutputProcessor:
 
     def _update_stats_from_finished(self, req_state: RequestState,
                                     finish_reason: Optional[FinishReason],
-                                    iteration_stats: Optional[IterationStats]):
+                                    iteration_stats: Optional[IterationStats],
+                                    preempt_info: Optional[Dict[str, Any]]):
         if iteration_stats is None:
             return
 
@@ -422,17 +431,38 @@ class OutputProcessor:
             req_state.parent_req, iteration_stats,
             req_state.stats.num_generation_tokens)
         
-        if envs.VLLM_V1_TRACK_REQUETS:
+        if self.request_stats_collector is not None:
             # log the finished request
             finished_req = iteration_stats.finished_requests[-1] 
-            logg.info(f"Finished request {req_state.request_id}, "
-                      f"e2e latency (s): {finished_req.e2e_latency:.6f} "
-                      f"num prompt tokens: {finished_req.num_prompt_tokens} "
-                      f"num generation tokens: {finished_req.num_generation_tokens} "
-                      f"finish reason: {finished_req.finish_reason} "
-                      f"queued time (s): {finished_req.queued_time:.6f} "
-                      f"prefill time (s): {finished_req.prefill_time:.6f} "
-                      f"inference time (s): {finished_req.inference_time:.6f} "
-                      f"decode time (s): {finished_req.decode_time:.6f} "
-                      f"TTFT (s): {(finished_req.queued_time + finished_req.prefill_time):.6f} "
-                      f"TPOT (s): {(finished_req.decode_time / finished_req.num_generation_tokens):.6f} ")
+            # logg.info(f"Finished request {req_state.request_id}, "
+            #           f"e2e latency (s): {finished_req.e2e_latency:.6f} "
+            #           f"num prompt tokens: {finished_req.num_prompt_tokens} "
+            #           f"num generation tokens: {finished_req.num_generation_tokens} "
+            #           f"finish reason: {finished_req.finish_reason} "
+            #           f"queued time (s): {finished_req.queued_time:.6f} "
+            #           f"prefill time (s): {finished_req.prefill_time:.6f} "
+            #           f"inference time (s): {finished_req.inference_time:.6f} "
+            #           f"decode time (s): {finished_req.decode_time:.6f} "
+            #           f"TTFT (s): {(finished_req.queued_time + finished_req.prefill_time):.6f} "
+            #           f"TPOT (s): {(finished_req.decode_time / finished_req.num_generation_tokens):.6f} ")
+            self.request_stats_collector.record_finished_request(
+                req_state.request_id,
+                {
+                    "arrival_time_s": req_state.stats.arrival_time,
+                    "num_prompt_tokens": finished_req.num_prompt_tokens,
+                    "num_gen_tokens": finished_req.num_generation_tokens,
+                    "e2e_latency_ms": finished_req.e2e_latency * 1000,
+                    "queued_time_ms": finished_req.queued_time * 1000,
+                    "prefill_time_ms": finished_req.prefill_time * 1000,
+                    "decode_time_ms": finished_req.decode_time * 1000,
+                    "inference_time_ms": finished_req.inference_time * 1000,
+                    "finish_reason": finished_req.finish_reason,
+                    "preempt_count": preempt_info["preempt_count"],
+                    "preempt_step_ids": preempt_info["preempt_step_ids"],
+                    "resume_step_ids": preempt_info["resume_step_ids"],
+                }
+            )
+
+    def __del__(self):
+        if self.request_stats_collector is not None:
+            self.request_stats_collector.finalize()

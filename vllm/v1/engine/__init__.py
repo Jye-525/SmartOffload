@@ -3,7 +3,7 @@
 import enum
 import time
 from collections.abc import Sequence
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Dict, Any
 
 import msgspec
 
@@ -104,6 +104,7 @@ class EngineCoreOutput(
     finish_reason: Optional[FinishReason] = None
     stop_reason: Union[int, str, None] = None
     events: Optional[list[EngineCoreEvent]] = None
+    preempt_info: Optional[Dict[str, Any]] = None
 
     @property
     def finished(self) -> bool:
