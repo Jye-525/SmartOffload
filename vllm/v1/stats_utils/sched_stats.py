@@ -243,6 +243,7 @@ class SchedStatsCollector:
             "lat_between_steps_ms",
             # Scheduling state
             "total_scheduled_tokens",
+            "total_scheduled_reqs",
             "num_newly_scheduled",
             "newly_scheduled_request_ids",
             "num_running_requests",
@@ -301,6 +302,7 @@ class SchedStatsCollector:
             "per_step_dur_ms": (record.engine_time_end_ns - record.engine_time_start_ns) / 1_000_000.0,
             "lat_between_steps_ms": record.lat_between_steps_ms,
             "total_scheduled_tokens": record.total_scheduled_tokens,
+            "total_scheduled_reqs": record.num_newly_scheduled + record.num_running_requests + record.num_resumed_requests,
             "num_newly_scheduled": record.num_newly_scheduled,
             "newly_scheduled_request_ids": record.newly_scheduled_request_ids,
             "num_running_requests": record.num_running_requests,

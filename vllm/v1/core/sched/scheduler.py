@@ -2905,13 +2905,17 @@ class Scheduler(SchedulerInterface):
         sim_running = {req_id: (pt, max(1, pt + sim_kv_cache_copy.reqs_state.estimate_output() - sim_kv_cache_copy.reqs_state.progress[req_id][0])) for (req_id, pt) in self.sim_kv_cache.reqs_state.running}
         cur_est_output = sim_kv_cache_copy.reqs_state.estimate_output()
         cur_remaining_tokens = new_prompt_tokens + cur_est_output - num_new_tokens
+        cur_remaining_pt = new_prompt_tokens - sim_kv_cache_copy.reqs_state.progress[request.request_id][1]
         ## sort the sim running requests by the remaining tokens
         sim_sorted = sorted(sim_running.items(), key=lambda x: x[1][1])
 
+        remaining_prefill_iters = 0
+        cmp_remaining_pt = 0
         iteration = 0
         idx = 0
         while idx < len(sim_sorted):
-            if cur_remaining_tokens - iteration == 0:
+            # if cur_remaining_tokens - iteration == 0:
+            if cur_remaining_tokens - cmp_remaining_pt - (iteration - remaining_prefill_iters) == 0:
                 return True
             (req_id, (prompt_tokens, remaining_tokens)) = sim_sorted[idx]
             fast_forward = min(remaining_tokens, cur_remaining_tokens) - iteration
@@ -2927,9 +2931,27 @@ class Scheduler(SchedulerInterface):
                 if not sim_kv_cache_copy.can_allocate(sim_sorted[running_req_idx][0], fast_forward):
                     return False
                 sim_kv_cache_copy.allocate(sim_sorted[running_req_idx][0], sim_sorted[running_req_idx][1][0], fast_forward)
-            if not sim_kv_cache_copy.can_allocate(request.request_id, fast_forward):
+            
+            ### check if fast_forward is enough to schedule all the remaining prefill tokens
+            max_prefill_iters = cdiv(cur_remaining_pt,(self.max_num_scheduled_tokens - len(sim_sorted))) 
+            try_alloc_tokens = 0
+            if max_prefill_iters < fast_forward:
+                try_alloc_tokens = cur_remaining_pt + (fast_forward - max_prefill_iters)
+                cmp_remaining_pt = cur_remaining_pt
+                remaining_prefill_iters = max_prefill_iters 
+                cur_remaining_pt = 0
+            else:
+                try_alloc_tokens = (self.max_num_scheduled_tokens - len(sim_sorted)) * fast_forward
+                cmp_remaining_pt += try_alloc_tokens
+                remaining_prefill_iters += fast_forward 
+                cur_remaining_pt -= try_alloc_tokens
+
+            # # if not sim_kv_cache_copy.can_allocate(request.request_id, fast_forward):
+            #     return False
+            # sim_kv_cache_copy.allocate(request.request_id, sim_sorted[running_req_idx][1][0], fast_forward)
+            if not sim_kv_cache_copy.can_allocate(request.request_id, try_alloc_tokens):
                 return False
-            sim_kv_cache_copy.allocate(request.request_id, sim_sorted[running_req_idx][1][0], fast_forward)
+            sim_kv_cache_copy.allocate(request.request_id, sim_sorted[running_req_idx][1][0], try_alloc_tokens)
             iteration += fast_forward
         return True
     
