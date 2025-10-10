@@ -60,6 +60,9 @@ class RequestStateStats:
     scheduled_ts: float = 0.0
     first_token_ts: float = 0.0
     last_token_ts: float = 0.0
+    
+    # This are for time per output token (time between two consecutive new tokens - in milliseconds)
+    tpots: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -75,6 +78,8 @@ class FinishedRequestStats:
     prefill_time: float = 0.0
     inference_time: float = 0.0
     decode_time: float = 0.0
+    # This are for time per output token (time between two consecutive new tokens - in milliseconds)
+    tpots: list[float] = field(default_factory=list)
 
 
 class IterationStats:
@@ -124,6 +129,7 @@ class IterationStats:
         else:
             tpot = engine_core_timestamp - req_stats.last_token_ts
             self.time_per_output_tokens_iter.append(tpot)
+            req_stats.tpots.append(tpot * 1000)
 
         req_stats.last_token_ts = engine_core_timestamp
 
@@ -175,7 +181,8 @@ class IterationStats:
                                  queued_time=queued_time,
                                  prefill_time=prefill_time,
                                  inference_time=inference_time,
-                                 decode_time=decode_time)
+                                 decode_time=decode_time,
+                                 tpots=req_stats.tpots)
         self.finished_requests.append(finished_req)
 
 

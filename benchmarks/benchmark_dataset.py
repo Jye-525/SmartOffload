@@ -7,6 +7,7 @@ generation. Supported dataset types include:
   - Random (synthetic)
   - Sonnet
   - BurstGPT
+  - AzureCode/AzureConv
   - HuggingFace
   - VisionArena
 
@@ -38,6 +39,7 @@ from vllm.multimodal import MultiModalDataDict
 from vllm.transformers_utils.tokenizer import AnyTokenizer, get_lora_tokenizer
 
 from longbench.longbench_data import load_lb_dataset, load_lb_v2_dataset, get_max_model_input_length, get_lb_dataset2maxgenlen
+from leval.leval_data import load_leval_dataset, leval_get_max_model_input_length, get_sys_prompt, max_gen_len
 
 logger = logging.getLogger(__name__)
 
@@ -594,6 +596,71 @@ class BurstGPTDataset(BenchmarkDataset):
                 ))
         return samples
 
+# -----------------------------------------------------------------------------
+# AzureCode/AzureConv Tracing Dataset Implementation
+# -----------------------------------------------------------------------------
+class AzureTracingDataset(BenchmarkDataset):
+    """
+    Implements the AzureCode/AzureConv Tracing dataset.  Loads data from a CSV file and generates
+    sample requests based on synthetic prompt generation. Only rows with positive prompt and 
+    response tokens are used.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.load_data()
+
+    def load_data(self, ):
+        if self.dataset_path is None:
+            raise ValueError("dataset_path must be provided for loading data.")
+
+        azure_df = pd.read_csv(self.dataset_path)
+        # Remove failed requests (where ContextTokens/GeneratedTokens is 0 or less).
+        azure_df = azure_df[(azure_df["ContextTokens"] > 0) & (azure_df["GeneratedTokens"] > 0)]
+        # Sample the desired number of rows.
+        self.data = azure_df
+
+    def _sample_loaded_data(self, num_requests: int) -> list:
+        if num_requests <= len(self.data):
+            data = self.data.sample(n=num_requests,
+                                    random_state=self.random_seed)
+        else:
+            data = self.data.sample(
+                n=num_requests,
+                random_state=self.random_seed,
+                replace=True,
+            )
+        # Convert the dataframe to a list of lists.
+        return data.values.tolist()
+
+    def sample(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        num_requests: int,
+        max_loras: Optional[int] = None,
+        lora_path: Optional[str] = None,
+        **kwargs,
+    ) -> list[SampleRequest]:
+        samples = []
+        data = self._sample_loaded_data(num_requests=num_requests)
+        for i in range(num_requests):
+            input_len = int(data[i][1])
+            output_len = int(data[i][2])
+            lora_req, tokenizer = self.get_random_lora_request(
+                tokenizer=tokenizer, max_loras=max_loras, lora_path=lora_path)
+            vocab_size = tokenizer.vocab_size
+            # Generate a synthetic prompt: a list of token IDs computed as (i +
+            # j) modulo vocab_size.
+            token_ids = [(i + j) % vocab_size for j in range(input_len)]
+            prompt = tokenizer.decode(token_ids)
+            samples.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=input_len,
+                    expected_output_len=output_len,
+                    lora_request=lora_req,
+                ))
+        return samples
 
 # -----------------------------------------------------------------------------
 # HuggingFace Dataset Base Implementation
@@ -894,6 +961,8 @@ class LongBenchDataset(BenchmarkDataset):
                     prompt_len=prompt_len,
                     expected_output_len=output_len,
                 ))
+            
+        self.maybe_oversample_requests(samples, num_requests)
         return samples 
 
 # -----------------------------------------------------------------------------
@@ -956,6 +1025,102 @@ class LongBenchV2Dataset(BenchmarkDataset):
                     prompt_len=prompt_len,
                     expected_output_len=max_output_len,
                 ))
+            
+        self.maybe_oversample_requests(samples, num_requests)
+        return samples
+    
+# -----------------------------------------------------------------------------
+# LEval Dataset Implementation
+# -----------------------------------------------------------------------------
+class LEvalDataset(BenchmarkDataset):
+    """
+    Implements the LEval dataset.  Loads the corresponding task data from huggingface and generates
+    sample requests based on the prompts. 
+    """
+
+    def __init__(self, subtask=str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.subtask = subtask
+        if self.subtask is None:
+            raise ValueError("subtask must be provided for longbench dataset.")
+        self.load_data()
+    
+    def load_data(self, ):
+        # Load data from the LongBench dataset.
+        if self.dataset_path is None:
+            raise ValueError("dataset_path must be provided for loading data.")
+        print(f"Loading LEval dataset for task: {self.subtask}, cache_dir: {self.dataset_path}")
+        self.data = load_leval_dataset(cache_dir=self.dataset_path, task=self.subtask, random_seed=self.random_seed)
+    
+    def num_tokens_from_string(self, input_string: str, tokenizer: PreTrainedTokenizerBase) -> int:
+        encoding = tokenizer(input_string).input_ids
+        num_tokens = len(encoding)
+        return num_tokens
+
+    def get_prompt(self, data, tokenizer, max_length, max_gen_len):
+        B_INST, E_INST = "[INST]", "[/INST]"
+        B_SYS, E_SYS = "<<SYS>>\n", "\n<</SYS>>\n\n"
+        sys_prompt = get_sys_prompt(self.subtask)
+
+        document = data['input']
+        cnt = 0
+        while self.num_tokens_from_string(document, tokenizer) > max_length:
+            document = " ".join(document.split(" ")[:max_length - cnt])  # chunk the input len to fit the max_length
+            cnt += 250
+        
+        inst = data['instructions'][0]
+        if "gsm" in self.subtask:
+            context = document + "\n\n" + inst
+            message = B_INST + B_SYS + sys_prompt + E_SYS + context
+        elif "topic" in self.subtask:
+            context = document + "\n\n" + inst
+            message = B_INST + B_SYS + sys_prompt + E_SYS + context + E_INST
+        else:
+            context = "Document is as follows. {document} Instruction: {inst} " + f"\nAnswer this question with maximum {max_gen_len} words."
+            message = B_INST + B_SYS + sys_prompt + E_SYS + context + E_INST
+
+        try:
+            text_inputs = message.format(document=document, inst=inst)
+        except:
+            text_inputs = message
+        
+        return text_inputs
+
+    def sample(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        num_requests: int,
+        model_name: str,
+        max_output_len: Optional[int],
+        **kwargs,
+    ) -> list[SampleRequest]:
+        # get max_input_len based on the model name
+        max_model_input_len = leval_get_max_model_input_length(model_name)
+        if max_output_len is not None:
+            max_input_len = max_model_input_len - max_output_len
+        else:
+            max_input_len = max_model_input_len - max_gen_len
+            max_output_len = max_gen_len
+        
+        samples = []
+        for entry in self.data:
+            if len(samples) >= num_requests:
+                break
+            
+            # 256 is an estimation for system prompt length
+            prompt = self.get_prompt(entry, tokenizer, max_input_len - 256, max_output_len)
+            # tokenize the prompt
+            prompt_ids = tokenizer(prompt).input_ids
+            prompt_len = len(prompt_ids)
+            assert prompt_len <= max_input_len, f"prompt_len: {prompt_len} > max_input_len: {max_input_len}"
+            samples.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=prompt_len,
+                    expected_output_len=max_output_len,
+                ))
+
+        self.maybe_oversample_requests(samples, num_requests)
         return samples 
 
 # -----------------------------------------------------------------------------
@@ -1008,4 +1173,6 @@ class GSM8KDataset(BenchmarkDataset):
                     prompt_len=prompt_len,
                     expected_output_len=output_len,
                 ))
+            
+        self.maybe_oversample_requests(samples, num_requests)
         return samples 

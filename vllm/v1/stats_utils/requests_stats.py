@@ -22,6 +22,7 @@ class RequestRecord:
     inference_time_ms: Optional[float] = None
     ttft_latency_ms: Optional[float] = None
     tpot_latency_ms: Optional[float] = None
+    tpots_ms: List[float] = field(default_factory=list)
     finish_reason: Optional[str] = None
     preempt_count: int = 0
     preempt_step_ids: List[int] = field(default_factory=list)
@@ -107,6 +108,7 @@ class RequestStatsCollector:
             "inference_time_ms",
             "ttft_latency_ms",
             "tpot_latency_ms",
+            "tpots_ms",
             "finish_reason",
             "preempt_count",
             "preempt_step_ids",
@@ -126,6 +128,7 @@ class RequestStatsCollector:
             "inference_time_ms": record.inference_time_ms,
             "ttft_latency_ms": record.ttft_latency_ms,
             "tpot_latency_ms": record.tpot_latency_ms,
+            "tpots_ms": record.tpots_ms,  # Store List
             "finish_reason": record.finish_reason,
             "preempt_count": record.preempt_count,
             "preempt_step_ids": record.preempt_step_ids,
@@ -144,7 +147,7 @@ class RequestStatsCollector:
         write_header = not self._written_header or not path.exists()
         rows = [self._record_to_row(record) for key, record in self._records.items()]
 
-        with path.open("a", newline="") as f:
+        with path.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=header)
             if write_header:
                 writer.writeheader()

@@ -276,7 +276,7 @@ class SchedStatsCollector:
         # Sort by step id for deterministic output
         rows = [self._record_to_row(self._records[k]) for k in sorted(self._records.keys())]
 
-        with path.open("a", newline="") as f:
+        with path.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=header)
             if write_header:
                 writer.writeheader()

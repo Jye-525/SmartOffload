@@ -34,11 +34,19 @@ export CUDA_MODULE_LOADING=EAGER # EAGER or LAZY
 # export VLLM_USE_SMART_OFFLOADING=0
 export VLLM_SMART_OFFLOAD_KVCACHE=0
 # export VLLM_USE_SMART_OFFLOADING_K=0
-export VLLM_ENABLE_LAYER_FWD_TIMING=1
+export VLLM_ENABLE_LAYER_FWD_TIMING=0
 ## schedule_method: default, cost-aware, evict-optimal, evict-optimal-2, evict-optimal-3 
-export VLLM_V1_SCHEDULE_METHOD="evict-optimal-6"
+export VLLM_V1_SCHEDULE_METHOD="default"
 export VLLM_V1_TRACK_REQUETS=1
 export VLLM_V1_ADAPTIVE_MAX_NUM_REQS=0
+
+export VLLM_V1_SCHED_STATS=1
+export VLLM_V1_SCHED_STATS_PATH=/home/jye/moe_mix_precision/running_scripts/sched_stats.csv
+export VLLM_V1_SCHED_STATS_FLUSH_EVERY_N=0
+
+export VLLM_V1_REQ_STATS_ENABLED=1
+export VLLM_V1_REQ_STATS_CSV_PATH=/home/jye/moe_mix_precision/running_scripts/req_stats.csv
+
 
 [ -d $RAY_TMPDIR ] || mkdir -p $RAY_TMPDIR
 [ -d $VLLM_RPC_BASE_PATH ] || mkdir -p $VLLM_RPC_BASE_PATH

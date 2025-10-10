@@ -15,7 +15,8 @@ from benchmark_dataset import (AIMODataset, BurstGPTDataset,
                                ConversationDataset, InstructCoderDataset,
                                RandomDataset, SampleRequest, ShareGPTDataset,
                                SonnetDataset, VisionArenaDataset, LongBenchDataset, 
-                               LongBenchV2Dataset, GSM8KDataset)
+                               LongBenchV2Dataset, GSM8KDataset, AzureTracingDataset,
+                               LEvalDataset)
 from benchmark_utils import convert_to_pytorch_benchmark_format, write_to_json
 from tqdm import tqdm
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
@@ -36,6 +37,15 @@ class ValidateLongBenchSubtaskAction(argparse.Action):
         valid_tasks = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
                     "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", \
                     "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
+        if (value is not None) and (value not in valid_tasks):
+            raise argparse.ArgumentError(self, f"Invalid subtask: {value}. The subtask must be from: {valid_tasks}")
+        setattr(namespace, self.dest, value)
+        
+class ValidateLEvalTaskAction(argparse.Action):
+    def __call__(self, parser, namespace, value, option_string = None):
+        valid_tasks = ["coursera", "gsm100", "quality", "topic_retrieval_longchat", "tpo", "codeU", "sci_fi", \
+                    "financial_qa", "gov_report_summ", "legal_contract_qa", "meeting_summ", "multidoc_qa", "narrative_qa", "natural_question", "samsum", "lsht", \
+                    "news_summ", "paper_assistant", "patent_summ", "review_summ", "scientific_qa", "tv_show_summ"]
         if (value is not None) and (value not in valid_tasks):
             raise argparse.ArgumentError(self, f"Invalid subtask: {value}. The subtask must be from: {valid_tasks}")
         setattr(namespace, self.dest, value)
@@ -341,18 +351,28 @@ def get_requests(args, tokenizer):
         common_kwargs['subtask'] = args.longbench_subtask
         cur_model_name = args.model.split("/")[-1]
         sample_kwargs["model_name"] = cur_model_name
-        sample_kwargs["max_output_len"] = args.longbench_output_len
-         
+        sample_kwargs["max_output_len"] = args.longbench_output_len 
     elif args.dataset_name == "longbench-v2":
         dataset_cls = LongBenchV2Dataset
         cur_model_name = args.model.split("/")[-1]
         sample_kwargs["model_name"] = cur_model_name
-        sample_kwargs["max_output_len"] = args.longbench_v2_output_len 
+        sample_kwargs["max_output_len"] = args.longbench_v2_output_len
+    elif args.dataset_name == "leval":
+        if args.leval_task is None:
+            raise ValueError(
+                "Please specify '--leval-task' for leval dataset.")
+        dataset_cls = LEvalDataset
+        common_kwargs['subtask'] = args.leval_task
+        cur_model_name = args.model.split("/")[-1]
+        sample_kwargs["model_name"] = cur_model_name
+        sample_kwargs["max_output_len"] = args.leval_output_len
     elif args.dataset_name == "gsm8k":
         dataset_cls = GSM8KDataset 
         sample_kwargs["max_output_len"] = args.gsm8k_output_len
     elif args.dataset_name == "burstgpt":
         dataset_cls = BurstGPTDataset
+    elif args.dataset_name == "azurecode" or args.dataset_name == "azureconv":
+        dataset_cls = AzureTracingDataset
     elif args.dataset_name == "hf":
         if args.dataset_path in VisionArenaDataset.SUPPORTED_DATASET_PATHS:
             dataset_cls = VisionArenaDataset
@@ -575,7 +595,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset-name",
         type=str,
-        choices=["sharegpt", "random", "sonnet", "burstgpt", "hf", 'longbench', 'longbench-v2', 'gsm8k'],
+        choices=["sharegpt", "random", "sonnet", "burstgpt", "hf", 'longbench', 'longbench-v2', 'gsm8k', "azurecode", "azureconv", 'leval'],
         help="Name of the dataset to benchmark on.",
         default="sharegpt")
     parser.add_argument(
@@ -707,6 +727,24 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Max output length for each request. Overrides the output lengths from the sampled gsm8k dataset.",
+    )
+    
+    # leval dataset
+    parser.add_argument(
+        "--leval-output-len",
+        type=int,
+        default=None,
+        help="Max output length for each request. Overrides the output lengths from the sampled leval dataset.",
+    )
+    parser.add_argument(
+        "--leval-task",
+        type=str,
+        default=None,
+        action=ValidateLEvalTaskAction,
+        help="Tasks are to sample from leval dataset. Valid task is from ['coursera', 'gsm100', 'quality', 'topic_retrieval_longchat', "\
+            "'tpo', 'codeU', 'sci_fi', 'financial_qa', 'gov_report_summ', 'legal_contract_qa', 'meeting_summ', 'multidoc_qa', "\
+            "'narrative_qa', 'natural_question', 'samsum', 'lsht', 'news_summ', 'paper_assistant', 'patent_summ', "\
+            "'review_summ', 'scientific_qa', 'tv_show_summ']",
     )
 
     parser = AsyncEngineArgs.add_cli_args(parser)

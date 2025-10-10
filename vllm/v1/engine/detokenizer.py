@@ -16,6 +16,8 @@ from vllm.v1.engine import EngineCoreRequest
 
 logger = init_logger(__name__)
 
+# Error string from https://github.com/huggingface/tokenizers/blob/909fdde2a4ffedd9295206f705eb612be2a91b12/tokenizers/src/tokenizer/mod.rs#L1042
+INVALID_PREFIX_ERR_MSG = "Invalid prefix encountered"
 
 class IncrementalDetokenizer:
 
@@ -156,8 +158,14 @@ class FastIncrementalDetokenizer(BaseIncrementalDetokenizer):
         super().__init__(request)
 
         sampling_params = request.sampling_params
+        assert sampling_params is not None
+        
+        self.request_id = request.request_id
+        self.skip_special_tokens = sampling_params.skip_special_tokens
+        # self.stream = DecodeStream(
+        #     skip_special_tokens=sampling_params.skip_special_tokens)
         self.stream = DecodeStream(
-            skip_special_tokens=sampling_params.skip_special_tokens)
+            skip_special_tokens=self.skip_special_tokens)
 
         self.tokenizer: Tokenizer = tokenizer._tokenizer
 
@@ -198,7 +206,8 @@ class FastIncrementalDetokenizer(BaseIncrementalDetokenizer):
                 self.spaces_between_special_tokens = True
 
     def decode_next(self, next_token_id: int) -> str:
-        token = self.stream.step(self.tokenizer, next_token_id)
+        # token = self.stream.step(self.tokenizer, next_token_id)
+        token = self._protected_step(next_token_id)
 
         if not self.spaces_between_special_tokens:
             special_token = self.added_token_ids.get(next_token_id)
@@ -209,6 +218,29 @@ class FastIncrementalDetokenizer(BaseIncrementalDetokenizer):
             self.last_special = is_special
 
         return token or ""
+    
+    def _protected_step(self, next_token_id: int) -> Optional[str]:
+        try:
+            token = self.stream.step(self.tokenizer, next_token_id)
+        except OverflowError:
+            # Handle rare observed overflow, still to be diagnosed.
+            # See https://github.com/vllm-project/vllm/issues/21951.
+            logger.exception("Encountered invalid token id: %d", next_token_id)
+            token = None
+        except Exception as e:
+            if not str(e).startswith(INVALID_PREFIX_ERR_MSG):
+                raise e
+            # Recover from edge case where tokenizer can produce non-monotonic,
+            # invalid UTF-8 output, which breaks the internal state of
+            # tokenizers' DecodeStream.
+            # See https://github.com/vllm-project/vllm/issues/17448.
+            logger.warning(
+                "Encountered invalid prefix detokenization error"
+                " for request %s, resetting decode stream.", self.request_id)
+            self.stream = DecodeStream(
+                skip_special_tokens=self.skip_special_tokens)
+            token = self.stream.step(self.tokenizer, next_token_id)
+        return token
 
 
 class SlowIncrementalDetokenizer(BaseIncrementalDetokenizer):

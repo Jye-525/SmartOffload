@@ -456,6 +456,7 @@ class OutputProcessor:
                     "prefill_time_ms": finished_req.prefill_time * 1000,
                     "decode_time_ms": finished_req.decode_time * 1000,
                     "inference_time_ms": finished_req.inference_time * 1000,
+                    "tpots_ms": finished_req.tpots,
                     "finish_reason": finished_req.finish_reason,
                     "preempt_count": preempt_info["preempt_count"],
                     "preempt_step_ids": preempt_info["preempt_step_ids"],

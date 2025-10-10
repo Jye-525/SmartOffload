@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Tuple
 from datasets import load_dataset, concatenate_datasets
 
 def _load_and_process_dataset(dataset_name, cache_dir, prompt_format, max_gen_len):
-    dataset = load_dataset('THUDM/LongBench', dataset_name, cache_dir=cache_dir, split='test')
+    dataset = load_dataset('THUDM/LongBench', dataset_name, cache_dir=cache_dir, split='test', trust_remote_code=True)
     
     dataset = dataset.map(lambda x: {
         "dataset_name": dataset_name,
