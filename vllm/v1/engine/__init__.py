@@ -97,6 +97,7 @@ class EngineCoreOutput(
 
     request_id: str
     new_token_ids: list[int]
+    pred_out_length: int = 0
 
     new_logprobs: Optional[LogprobsLists] = None
     new_prompt_logprobs_tensors: Optional[LogprobsTensors] = None

@@ -85,6 +85,9 @@ class Request:
         self.preempt_step_ids: list[int] = []
         self.resume_step_ids: list[int] = []
 
+        ## Added by Jie to eevaluate the predictor robutness when using moving average
+        self.pred_output_length: int = 0
+
     @classmethod
     def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":
         if request.mm_inputs is not None:
@@ -163,6 +166,9 @@ class Request:
             "preempt_step_ids": self.preempt_step_ids,
             "resume_step_ids": self.resume_step_ids
         }
+    
+    def update_pred_output_length(self, pred_length: int):
+        self.pred_output_length = pred_length
     
     # # Added by Jie to track the information of each request
     # def __del__(self):

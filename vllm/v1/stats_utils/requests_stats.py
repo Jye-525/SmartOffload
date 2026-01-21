@@ -15,6 +15,7 @@ class RequestRecord:
     arrival_time_s: float = 0.0 # wall-clock time
     num_prompt_tokens: int = 0
     num_gen_tokens: int = 0
+    num_pred_output_tokens: int = 0
     e2e_latency_ms: Optional[float] = None
     queued_time_ms: Optional[float] = None
     prefill_time_ms: Optional[float] = None
@@ -101,6 +102,7 @@ class RequestStatsCollector:
             "arrival_time_s",
             "num_prompt_tokens",
             "num_gen_tokens",
+            "num_pred_output_tokens",
             "e2e_latency_ms",
             "queued_time_ms",
             "prefill_time_ms",
@@ -121,6 +123,7 @@ class RequestStatsCollector:
             "arrival_time_s": record.arrival_time_s,
             "num_prompt_tokens": record.num_prompt_tokens,
             "num_gen_tokens": record.num_gen_tokens,
+            "num_pred_output_tokens": record.num_pred_output_tokens,
             "e2e_latency_ms": record.e2e_latency_ms,
             "queued_time_ms": record.queued_time_ms,
             "prefill_time_ms": record.prefill_time_ms,

@@ -32,7 +32,7 @@ from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.utils import cdiv, sha256
 from vllm.v1.stats_utils.sched_stats import SchedStatsCollector
-from vllm.v1.core.sched.simulate_kv_cache import SimKVCache, ReqsState
+from vllm.v1.core.sched.simulate_kv_cache import RequestsOracle, SimKVCache, ReqsState
 
 logger = init_logger(__name__)
 
@@ -189,6 +189,11 @@ class Scheduler(SchedulerInterface):
         
         self.estimate_output_len: dict[str, int] = {}  # request_id -> estimated output length
         # self.reqs_state = ReqsState() # used by opt-7 to track all requests
+        if self.schedule_method == "evict-optimal-7" and envs.VLLM_V1_OUTPUT_LENGTH_PREDICTOR=="ideal":
+             assert envs.VLLM_V1_DATASETS_ORACLE_FILE is not None, "Please provide VLLM_V1_DATASETS_ORACLE_FILE for ideal output length predictor"
+             requests_oracle = RequestsOracle()
+             requests_oracle.initialize(envs.VLLM_V1_DATASETS_ORACLE_FILE)
+
         self.sim_kv_cache = SimKVCache(max_blocks=self.kv_cache_manager.block_pool.get_num_free_blocks(), block_size=self.block_size)
 
     def schedule(self) -> SchedulerOutput:
@@ -2339,6 +2344,7 @@ class Scheduler(SchedulerInterface):
                     scheduled_resumed_reqs.append(request)
                     ##### update the simulate kv cache to add the request, and allocate blocks for the request
                     self.sim_kv_cache.add_running_req(request.request_id, max(request.num_prompt_tokens, request.num_recomputed_tokens))
+                    # logger.info(f"+++++++++++Scheduler-Opt7: Resuming preempted req {request.request_id} at step {self.schedule_step_count}: prmpt={request.num_prompt_tokens}, recomputed={request.num_recomputed_tokens}, to_schedule={num_new_tokens}")
                     self.sim_kv_cache.allocate(request.request_id, request.num_prompt_tokens, num_new_tokens, len(new_blocks))
                     ### update statistics info
                     total_resumed_tokens += request.num_recomputed_tokens
@@ -2717,6 +2723,7 @@ class Scheduler(SchedulerInterface):
                     EngineCoreOutput(
                         request_id=req_id,
                         new_token_ids=new_token_ids,
+                        pred_out_length=request.pred_output_length,
                         finish_reason=request.get_finished_reason(),
                         new_logprobs=new_logprobs,
                         new_prompt_logprobs_tensors=prompt_logprobs_tensors,
@@ -2902,8 +2909,20 @@ class Scheduler(SchedulerInterface):
         else:
             new_prompt_tokens = request.num_prompt_tokens
 
-        sim_running = {req_id: (pt, max(1, pt + sim_kv_cache_copy.reqs_state.estimate_output() - sim_kv_cache_copy.reqs_state.progress[req_id][0])) for (req_id, pt) in self.sim_kv_cache.reqs_state.running}
-        cur_est_output = sim_kv_cache_copy.reqs_state.estimate_output()
+        # Build sim_running
+        # sim_running = {req_id: (pt, max(1, pt + sim_kv_cache_copy.reqs_state.estimate_output() - sim_kv_cache_copy.reqs_state.progress[req_id][0])) for (req_id, pt) in self.sim_kv_cache.reqs_state.running}
+        sim_running = {}
+        for (req_id, pt) in self.sim_kv_cache.reqs_state.running:
+            est_outlen = sim_kv_cache_copy.reqs_state.estimate_output(req_id)
+            sim_running[req_id] = (pt, max(1, pt + est_outlen - sim_kv_cache_copy.reqs_state.progress[req_id][0]))
+            if envs.VLLM_V1_OUTPUT_LENGTH_PREDICTOR=="ideal":
+                self.requests[req_id].update_pred_output_length(est_outlen)  # Initial update
+            else:    
+                self.requests[req_id].update_pred_output_length(sim_kv_cache_copy.reqs_state.progress[req_id][1] - sim_kv_cache_copy.reqs_state.progress[req_id][0] + est_outlen)  # Initial update
+                logger.info(f"++++++Scheduler-Opt7: Initial running req {req_id} update predicted output length. Progress: {sim_kv_cache_copy.reqs_state.progress[req_id][1] - sim_kv_cache_copy.reqs_state.progress[req_id][0]}. est_output={est_outlen} finished reqs so far: {sim_kv_cache_copy.reqs_state.finished_reqs}")
+        
+        cur_est_output = sim_kv_cache_copy.reqs_state.estimate_output(request.request_id)
+        self.requests[request.request_id].update_pred_output_length(cur_est_output)
         cur_remaining_tokens = new_prompt_tokens + cur_est_output - num_new_tokens
         cur_remaining_pt = new_prompt_tokens - sim_kv_cache_copy.reqs_state.progress[request.request_id][1]
         ## sort the sim running requests by the remaining tokens
@@ -2915,9 +2934,14 @@ class Scheduler(SchedulerInterface):
         idx = 0
         while idx < len(sim_sorted):
             # if cur_remaining_tokens - iteration == 0:
+            (req_id, (prompt_tokens, remaining_tokens)) = sim_sorted[idx]
             if cur_remaining_tokens - cmp_remaining_pt - (iteration - remaining_prefill_iters) == 0:
                 return True
-            (req_id, (prompt_tokens, remaining_tokens)) = sim_sorted[idx]
+            # (req_id, (prompt_tokens, remaining_tokens)) = sim_sorted[idx]
+            # update predicted output length for the request
+            if envs.VLLM_V1_OUTPUT_LENGTH_PREDICTOR !="ideal": 
+                self.requests[req_id].update_pred_output_length(sim_kv_cache_copy.reqs_state.progress[req_id][1] - sim_kv_cache_copy.reqs_state.progress[req_id][0])
+            
             fast_forward = min(remaining_tokens, cur_remaining_tokens) - iteration
             if fast_forward == 0:
                 # (TODO): should we add this request to the finished requests?
@@ -2933,7 +2957,7 @@ class Scheduler(SchedulerInterface):
                 sim_kv_cache_copy.allocate(sim_sorted[running_req_idx][0], sim_sorted[running_req_idx][1][0], fast_forward)
             
             ### check if fast_forward is enough to schedule all the remaining prefill tokens
-            max_prefill_iters = cdiv(cur_remaining_pt,(self.max_num_scheduled_tokens - len(sim_sorted))) 
+            max_prefill_iters = cdiv(cur_remaining_pt, (self.max_num_scheduled_tokens - len(sim_sorted))) 
             try_alloc_tokens = 0
             if max_prefill_iters < fast_forward:
                 try_alloc_tokens = cur_remaining_pt + (fast_forward - max_prefill_iters)
@@ -2946,12 +2970,9 @@ class Scheduler(SchedulerInterface):
                 remaining_prefill_iters += fast_forward 
                 cur_remaining_pt -= try_alloc_tokens
 
-            # # if not sim_kv_cache_copy.can_allocate(request.request_id, fast_forward):
-            #     return False
-            # sim_kv_cache_copy.allocate(request.request_id, sim_sorted[running_req_idx][1][0], fast_forward)
             if not sim_kv_cache_copy.can_allocate(request.request_id, try_alloc_tokens):
                 return False
-            sim_kv_cache_copy.allocate(request.request_id, sim_sorted[running_req_idx][1][0], try_alloc_tokens)
+            sim_kv_cache_copy.allocate(request.request_id, request.num_prompt_tokens, try_alloc_tokens)
             iteration += fast_forward
         return True
     

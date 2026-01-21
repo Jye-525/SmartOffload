@@ -412,8 +412,8 @@ class ShareGPTDataset(BenchmarkDataset):
     ) -> list:
         samples: list = []
         for entry in self.data:
-            if len(samples) >= num_requests:
-                break
+            # if len(samples) >= num_requests:
+            #     break
             prompt, completion = (
                 entry["conversations"][0]["value"],
                 entry["conversations"][1]["value"],
@@ -441,8 +441,28 @@ class ShareGPTDataset(BenchmarkDataset):
                     expected_output_len=new_output_len,
                     lora_request=lora_request,
                 ))
-        self.maybe_oversample_requests(samples, num_requests)
-        return samples
+            
+        prompt_lens = [sample.prompt_len for sample in samples]
+        output_lens = [sample.expected_output_len for sample in samples]
+        print(f"Prompt lengths: min {min(prompt_lens)}, max {max(prompt_lens)}, avg {sum(prompt_lens)/len(prompt_lens):.2f}")
+        print(f"Output lengths: min {min(output_lens)}, max {max(output_lens)}, avg {sum(output_lens)/len(output_lens):.2f}")
+        print(f"Request Before filtering: {len(samples)} total samples")
+        
+        if len(samples) < num_requests:
+            self.maybe_oversample_requests(samples, num_requests)
+
+        filtered_samples = samples[:num_requests]
+        prompt_lens = [sample.prompt_len for sample in filtered_samples]
+        output_lens = [sample.expected_output_len for sample in filtered_samples]
+        print(f"Request After filtering: {len(filtered_samples)} valid samples")
+        # print(f"XX Prompt lengths: min {min(prompt_lens)}, max {max(prompt_lens)}, avg {sum(prompt_lens)/len(prompt_lens):.2f}")
+        # print(f"XX Output lengths: min {min(output_lens)}, max {max(output_lens)}, avg {sum(output_lens)/len(output_lens):.2f}")
+
+        # raise AssertionError("debug stop")
+        # for idx, sample in enumerate(filtered_samples):
+        #     print(f"req_id: {idx}, Prompt len: {sample.prompt_len}, Expected output len: {sample.expected_output_len}")
+
+        return samples[:num_requests]
 
 
 # -----------------------------------------------------------------------------

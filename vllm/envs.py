@@ -121,6 +121,9 @@ if TYPE_CHECKING:
     VLLM_V1_SCHED_STATS: bool = False
     VLLM_V1_SCHED_STATS_PATH: Optional[str] = None
     VLLM_V1_SCHED_STATS_FLUSH_EVERY_N: int = 0
+    ### Output length predictor: ideal / moving_avg
+    VLLM_V1_OUTPUT_LENGTH_PREDICTOR: Optional[str] = None # only support "ideal" and "moving_avg" for now used by opt-7 scheduler
+    VLLM_V1_DATASETS_ORACLE_FILE: Optional[str] = None # path to the datasets oracle file used by ideal output length predictor
 
 
 def get_default_cache_root():
@@ -763,6 +766,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ### Track request stats
     "VLLM_V1_REQ_STATS_ENABLED": lambda: os.environ.get("VLLM_V1_REQ_STATS_ENABLED", "0") == "1",
     "VLLM_V1_REQ_STATS_CSV_PATH": lambda: os.environ.get("VLLM_V1_REQ_STATS_CSV_PATH", None),
+
+    ### Predictor
+    "VLLM_V1_OUTPUT_LENGTH_PREDICTOR": lambda: os.environ.get("VLLM_V1_OUTPUT_LENGTH_PREDICTOR", None),
+    "VLLM_V1_DATASETS_ORACLE_FILE": lambda: os.environ.get("VLLM_V1_DATASETS_ORACLE_FILE", None),
 }
 
 # end-env-vars-definition

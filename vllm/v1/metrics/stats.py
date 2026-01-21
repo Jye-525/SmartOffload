@@ -51,6 +51,7 @@ class RequestStateStats:
     """Stats that need to be tracked across delta updates."""
 
     num_generation_tokens: int = 0
+    num_pred_output_tokens: int = 0
 
     # This is a engine frontend timestamp (wall-clock)
     arrival_time: float = 0.0
@@ -73,6 +74,7 @@ class FinishedRequestStats:
     e2e_latency: float = 0.0
     num_prompt_tokens: int = 0
     num_generation_tokens: int = 0
+    num_pred_output_tokens: int = 0
     max_tokens_param: Optional[int] = None
     queued_time: float = 0.0
     prefill_time: float = 0.0
@@ -117,6 +119,7 @@ class IterationStats:
             self.time_to_first_tokens_iter.append(first_token_latency)
 
         req_stats.num_generation_tokens += num_new_generation_tokens
+        req_stats.num_pred_output_tokens = output.pred_out_length
 
         # Process request-level engine core events
         if output.events is not None:
@@ -177,6 +180,7 @@ class IterationStats:
                                  e2e_latency=e2e_latency,
                                  num_prompt_tokens=num_prompt_tokens,
                                  num_generation_tokens=req_stats.num_generation_tokens,
+                                 num_pred_output_tokens=req_stats.num_pred_output_tokens,
                                  max_tokens_param=max_tokens_param,
                                  queued_time=queued_time,
                                  prefill_time=prefill_time,

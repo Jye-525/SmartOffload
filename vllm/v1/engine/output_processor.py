@@ -451,6 +451,7 @@ class OutputProcessor:
                     "arrival_time_s": req_state.stats.arrival_time,
                     "num_prompt_tokens": finished_req.num_prompt_tokens,
                     "num_gen_tokens": finished_req.num_generation_tokens,
+                    "num_pred_output_tokens": finished_req.num_pred_output_tokens,
                     "e2e_latency_ms": finished_req.e2e_latency * 1000,
                     "queued_time_ms": finished_req.queued_time * 1000,
                     "prefill_time_ms": finished_req.prefill_time * 1000,

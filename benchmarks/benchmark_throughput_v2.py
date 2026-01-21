@@ -739,7 +739,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--leval-task",
         type=str,
-        default=None,
+        default="coursera",
         action=ValidateLEvalTaskAction,
         help="Tasks are to sample from leval dataset. Valid task is from ['coursera', 'gsm100', 'quality', 'topic_retrieval_longchat', "\
             "'tpo', 'codeU', 'sci_fi', 'financial_qa', 'gov_report_summ', 'legal_contract_qa', 'meeting_summ', 'multidoc_qa', "\

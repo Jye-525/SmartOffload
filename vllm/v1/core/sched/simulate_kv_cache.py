@@ -1,7 +1,44 @@
 import math
-from typing import Optional
+from typing import Optional, Dict
+import vllm.envs as envs
 from vllm.utils import cdiv
 from vllm.v1.request import Request
+
+class RequestsOracle:
+    """Singleton static class that loads a requests CSV once and provides output length lookups."""
+    _instance = None
+    _initialized = False
+    _requests_info: Dict[str, int] = {}  # req_id -> (prompt_tokens, output_tokens)
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def initialize(self, csv_file: str):
+        """Load CSV once - call this at startup."""
+        if self._initialized:
+            return
+        
+        import csv
+        with open(csv_file, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                req_id = row['req_id']
+                prompt_tokens = int(row['prompt_tokens'])
+                output_tokens = int(row['output_tokens'])
+                self._requests_info[req_id] = (prompt_tokens, output_tokens)
+        self._initialized = True
+        print(f"RequestOutputOracle initialized with {len(self._requests_info)} requests")
+    
+    def get_output_length(self, req_id: str) -> Optional[int]:
+        """Lookup output length for a request."""
+        return self._requests_info.get(req_id)[1]
+    
+    def has_request(self, req_id: str) -> bool:
+        """Check if request is in oracle."""
+        return req_id in self._requests_info
+
 
 class BaseReqsState:
     def __init__(self, reqs_state=None):
@@ -18,6 +55,8 @@ class BaseReqsState:
             self.finished_M2 = reqs_state.finished_M2
 
     def add_finished_req(self, num_tokens: int):
+        if envs.VLLM_V1_OUTPUT_LENGTH_PREDICTOR=="ideal":
+            return
         self.finished_no += 1
         delta = num_tokens - self.finished_mean
         self.finished_mean += delta / self.finished_no
@@ -35,10 +74,20 @@ class BaseReqsState:
     #     else:
     #         return 1
 
-    def estimate_output(self):
-        if self.finished_no > 1:
-            return math.ceil(math.fabs(self.finished_mean - math.sqrt(self.finished_M2 / (self.finished_no - 1))))
-        return 1
+    def estimate_output(self, req_id: str) -> int:
+        assert envs.VLLM_V1_OUTPUT_LENGTH_PREDICTOR=="ideal" or envs.VLLM_V1_OUTPUT_LENGTH_PREDICTOR=="moving_avg", "Unknown output length predictor"
+        if envs.VLLM_V1_OUTPUT_LENGTH_PREDICTOR=="ideal":
+            requests_oracle = RequestsOracle()
+            if req_id in requests_oracle._requests_info:
+                prompt_tokens, output_tokens = requests_oracle._requests_info[req_id]
+                return output_tokens
+            else:
+                raise ValueError(f"Request ID {req_id} not found in RequestsOracle")
+            
+        else:
+            if self.finished_no > 1:
+                return math.ceil(math.fabs(self.finished_mean - math.sqrt(self.finished_M2 / (self.finished_no - 1))))
+            return 1
 
 
 class ReqsState(BaseReqsState):
