@@ -2919,7 +2919,7 @@ class Scheduler(SchedulerInterface):
                 self.requests[req_id].update_pred_output_length(est_outlen)  # Initial update
             else:    
                 self.requests[req_id].update_pred_output_length(sim_kv_cache_copy.reqs_state.progress[req_id][1] - sim_kv_cache_copy.reqs_state.progress[req_id][0] + est_outlen)  # Initial update
-                logger.info(f"++++++Scheduler-Opt7: Initial running req {req_id} update predicted output length. Progress: {sim_kv_cache_copy.reqs_state.progress[req_id][1] - sim_kv_cache_copy.reqs_state.progress[req_id][0]}. est_output={est_outlen} finished reqs so far: {sim_kv_cache_copy.reqs_state.finished_reqs}")
+                logger.info(f"++++++Scheduler-Opt7: Initial running req {req_id} update predicted output length. Progress: {sim_kv_cache_copy.reqs_state.progress[req_id][1] - sim_kv_cache_copy.reqs_state.progress[req_id][0]}. est_output={est_outlen} finished reqs so far: {sim_kv_cache_copy.reqs_state.finished_no}")
         
         cur_est_output = sim_kv_cache_copy.reqs_state.estimate_output(request.request_id)
         self.requests[request.request_id].update_pred_output_length(cur_est_output)
